@@ -1,17 +1,22 @@
 #!/bin/bash
 set -e
 
-PROJECT_ID="${PROJECT_ID:-aifin-project}"
-FIREBASE_PROJECT_ID="${FIREBASE_PROJECT_ID:-aifin-project-7321a}"
+# ─── Required environment variables (no hardcoded secrets) ───
+# Set these in your CI/CD pipeline or export before running.
+: "${PROJECT_ID:?ERROR: PROJECT_ID is required}"
+: "${FIREBASE_PROJECT_ID:?ERROR: FIREBASE_PROJECT_ID is required}"
+: "${LEGACY_SHARED_EMAILS:?ERROR: LEGACY_SHARED_EMAILS is required}"
+: "${PREMIUM_EMAILS:?ERROR: PREMIUM_EMAILS is required}"
+: "${ADMIN_EMAILS:?ERROR: ADMIN_EMAILS is required}"
+: "${CORS_ORIGINS:?ERROR: CORS_ORIGINS is required}"
+
+# ─── Optional with safe defaults ───
 REGION="${REGION:-us-central1}"
 REPO="${REPO:-finance-repo}"
 IMAGE="${IMAGE:-finance-backend}"
 TAG="${TAG:-latest}"
 DEFAULT_TENANT_ID="${DEFAULT_TENANT_ID:-default}"
-LEGACY_SHARED_EMAILS="${LEGACY_SHARED_EMAILS:-victorzore94@gmail.com,lalaacarv@gmail.com}"
-PREMIUM_EMAILS="${PREMIUM_EMAILS:-victorzore94@gmail.com,lalaacarv@gmail.com}"
-ADMIN_EMAILS="${ADMIN_EMAILS:-victorzore94@gmail.com}"
-CORS_ORIGINS="${CORS_ORIGINS:-http://localhost:3000,https://finance-frontend-ys7aiaicqa-uc.a.run.app,https://zorefinance.com}"
+
 ACTIVE_PROJECT="$(gcloud config get-value project 2>/dev/null || true)"
 
 echo "Active gcloud project: ${ACTIVE_PROJECT:-unset}"
@@ -35,6 +40,6 @@ gcloud run deploy "$IMAGE" \
   --allow-unauthenticated \
   --service-account "finance-backend-sa@$PROJECT_ID.iam.gserviceaccount.com" \
   --memory 1Gi \
-  --set-env-vars="^|^PROJECT_ID=$PROJECT_ID|FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID|TENANT_HEADER_NAME=X-Tenant-ID|DEFAULT_TENANT_ID=$DEFAULT_TENANT_ID|TENANT_REQUIRED=true|REQUIRE_AUTH_FOR_DATA=true|AUTO_JOIN_LEGACY_WORKSPACE=true|DEFAULT_LEGACY_MEMBER_LIMIT=2|LEGACY_SHARED_EMAILS=$LEGACY_SHARED_EMAILS|PREMIUM_EMAILS=$PREMIUM_EMAILS|ADMIN_EMAILS=$ADMIN_EMAILS|CORS_ORIGINS=$CORS_ORIGINS"
+  --set-env-vars="^|^PROJECT_ID=$PROJECT_ID|FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID|TENANT_HEADER_NAME=X-Tenant-ID|DEFAULT_TENANT_ID=$DEFAULT_TENANT_ID|TENANT_REQUIRED=true|REQUIRE_AUTH_FOR_DATA=true|AUTO_JOIN_LEGACY_WORKSPACE=true|DEFAULT_LEGACY_MEMBER_LIMIT=2|LEGACY_SHARED_EMAILS=$LEGACY_SHARED_EMAILS|PREMIUM_EMAILS=$PREMIUM_EMAILS|ADMIN_EMAILS=$ADMIN_EMAILS|CORS_ORIGINS=$CORS_ORIGINS|OWNERS=${OWNERS:-Victor,Larissa}"
 
 echo "Done!"

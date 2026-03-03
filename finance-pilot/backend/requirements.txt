@@ -1,11 +1,16 @@
-fastapi
-uvicorn
-python-multipart
-google-cloud-storage
-google-cloud-firestore
-google-cloud-bigquery
-google-auth
-pandas
-scikit-learn
-google-generativeai
-pydantic
+fastapi>=0.115.0,<1.0.0
+uvicorn>=0.32.0,<1.0.0
+python-multipart>=0.0.18,<1.0.0
+google-cloud-storage>=2.18.0,<3.0.0
+google-cloud-firestore>=2.19.0,<3.0.0
+google-cloud-bigquery>=3.27.0,<4.0.0
+google-auth>=2.36.0,<3.0.0
+pandas>=2.2.0,<3.0.0
+scikit-learn>=1.6.0,<2.0.0
+google-generativeai>=0.8.0,<1.0.0
+pydantic>=2.10.0,<3.0.0
+
+# ─── Dev / Test ───
+pytest>=8.0.0,<9.0.0
+pytest-asyncio>=0.24.0,<1.0.0
+httpx>=0.27.0,<1.0.0
