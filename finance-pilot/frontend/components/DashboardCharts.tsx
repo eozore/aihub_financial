@@ -12,9 +12,10 @@ interface DashboardData {
 // Monochromatic palette (same hue, different tones)
 const PRIMARY_CHART_COLOR = '#4338ca';
 const COLORS = ['#312e81', '#3730a3', '#4338ca', '#4f46e5', '#6366f1', '#818cf8'];
-const PERSON_COLORS: Record<string, string> = {
-    'Victor': '#3730a3',
-    'Larissa': '#818cf8'
+// Dynamic person colors — assigns from palette based on index
+const PERSON_COLOR_PALETTE = ['#3730a3', '#818cf8', '#4f46e5', '#6366f1', '#312e81'];
+const getPersonColor = (name: string, index: number): string => {
+    return PERSON_COLOR_PALETTE[index % PERSON_COLOR_PALETTE.length];
 };
 
 interface DashboardChartsProps {
@@ -22,7 +23,19 @@ interface DashboardChartsProps {
     granularity?: 'daily' | 'monthly';
 }
 
-const CustomTooltip = ({ active, payload, label }: any) => {
+interface TooltipPayloadItem {
+    name?: string;
+    value?: number;
+    payload?: Record<string, unknown>;
+}
+
+interface TooltipProps {
+    active?: boolean;
+    payload?: TooltipPayloadItem[];
+    label?: string;
+}
+
+const CustomTooltip = ({ active, payload, label }: TooltipProps) => {
     if (active && payload && payload.length) {
         return (
             <div className="bg-white border border-[var(--border-color)] rounded-lg p-3 shadow-lg text-sm">
@@ -36,7 +49,7 @@ const CustomTooltip = ({ active, payload, label }: any) => {
     return null;
 };
 
-const PersonTooltip = ({ active, payload }: any) => {
+const PersonTooltip = ({ active, payload }: TooltipProps) => {
     if (active && payload && payload.length) {
         const name = payload[0].name;
         const value = Number(payload[0].value || 0);
@@ -59,7 +72,7 @@ const PersonTooltip = ({ active, payload }: any) => {
     return null;
 };
 
-const TrendTooltip = ({ active, payload, label }: any) => {
+const TrendTooltip = ({ active, payload, label }: TooltipProps) => {
     if (active && payload && payload.length) {
         const formattedLabel = label?.includes('-')
             ? new Date(label + (label.length === 7 ? '-01' : '')).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' })
@@ -84,7 +97,7 @@ export default function DashboardCharts({ data, granularity = 'monthly' }: Dashb
             acc[item.name] = item.value || 0;
             return acc;
         },
-        { label: 'Total' } as Record<string, any>
+        { label: 'Total' } as Record<string, string | number>
     );
     const spendByPersonSubtitle =
         spendByPersonData.length === 2
@@ -191,7 +204,7 @@ export default function DashboardCharts({ data, granularity = 'monthly' }: Dashb
                                             stackId="total"
                                             barSize={28}
                                             radius={radius}
-                                            fill={PERSON_COLORS[entry.name] || COLORS[index % COLORS.length]}
+                                            fill={getPersonColor(entry.name, index)}
                                         />
                                     );
                                 })}

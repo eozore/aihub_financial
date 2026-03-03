@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../../context/AuthContext';
-import { getTransactions, updateTransaction, createTransaction, deleteTransaction, TransactionFilters } from '../../services/api';
+import { getTransactions, updateTransaction, createTransaction, deleteTransaction, TransactionFilters, getOwners } from '../../services/api';
 import { Loader, Edit2, X, Check, Calendar, Filter, Plus, Trash2, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import AppShell from '../../components/AppShell';
 import clsx from 'clsx';
@@ -16,7 +16,6 @@ const CATEGORIES = [
     'Airbnb/Hotel', 'Pedagio', 'ItensdeCasa', 'Luana', 'Outro'
 ];
 const TYPES = ['Shared', 'Individual'];
-const OWNERS = ['Victor', 'Larissa'];
 
 type SortField = 'date' | 'merchant_clean' | 'owner' | 'amount' | 'category' | 'type';
 type SortDirection = 'asc' | 'desc';
@@ -35,15 +34,32 @@ const emptyForm: EditFormData = {
     amount: '',
     merchant_clean: '',
     category: 'Outro',
-    owner: 'Victor',
+    owner: '',
     type: 'Shared'
 };
+
+interface Transaction {
+    id: string;
+    date: string;
+    amount: number;
+    merchant_clean: string;
+    category: string;
+    subcategory?: string;
+    owner: string;
+    type: string;
+    month_ref?: string;
+}
 
 export default function TransactionsPage() {
     const { user, loading } = useAuth();
     const router = useRouter();
-    const [transactions, setTransactions] = useState<any[]>([]);
+    const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [loadingData, setLoadingData] = useState(false);
+    const [owners, setOwners] = useState<string[]>(['Victor', 'Larissa']);
+
+    useEffect(() => {
+        getOwners().then(setOwners).catch(() => {});
+    }, []);
 
     // Date range state
     const currentMonth = new Date().toISOString().slice(0, 7);
@@ -65,6 +81,11 @@ export default function TransactionsPage() {
     // Create modal state
     const [showCreateModal, setShowCreateModal] = useState(false);
     const [createForm, setCreateForm] = useState<EditFormData>(emptyForm);
+
+    // Pagination state
+    const PAGE_SIZE = 200;
+    const [totalCount, setTotalCount] = useState(0);
+    const [currentPage, setCurrentPage] = useState(0);
 
     // Sorted transactions
     const sortedTransactions = useMemo(() => {
@@ -113,7 +134,7 @@ export default function TransactionsPage() {
 
     useEffect(() => {
         if (user) fetchTransactions();
-    }, [user, startMonth, endMonth, ownerFilter, typeFilter]);
+    }, [user, startMonth, endMonth, ownerFilter, typeFilter, currentPage]);
 
     const fetchTransactions = async () => {
         setLoadingData(true);
@@ -122,8 +143,9 @@ export default function TransactionsPage() {
             if (ownerFilter) filters.owner = ownerFilter;
             if (typeFilter) filters.txType = typeFilter;
 
-            const data = await getTransactions(startMonth, endMonth, filters);
-            setTransactions(data);
+            const result = await getTransactions(startMonth, endMonth, filters, PAGE_SIZE, currentPage * PAGE_SIZE);
+            setTransactions(result.data ?? result);
+            setTotalCount(result.total ?? (result.data ?? result).length);
         } catch (error) {
             console.error(error);
         } finally {
@@ -131,14 +153,16 @@ export default function TransactionsPage() {
         }
     };
 
-    const handleEditClick = (tx: any) => {
+    const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+
+    const handleEditClick = (tx: Transaction) => {
         setEditingId(tx.id);
         setEditForm({
             date: tx.date,
             amount: tx.amount?.toString() || '',
             merchant_clean: tx.merchant_clean || '',
             category: tx.category || 'Outro',
-            owner: tx.owner || 'Victor',
+            owner: tx.owner || owners[0] || '',
             type: tx.type || 'Shared'
         });
     };
@@ -248,8 +272,9 @@ export default function TransactionsPage() {
                                 className="appearance-none bg-[var(--color-bg-primary)] border-none text-[var(--color-text-primary)] text-sm font-medium py-2 pl-3 pr-8 rounded-lg cursor-pointer hover:bg-[var(--color-bg-accent)] transition-colors focus:ring-2 focus:ring-[var(--color-brand-primary)]"
                             >
                                 <option value="">Todas Pessoas</option>
-                                <option value="Victor">Victor</option>
-                                <option value="Larissa">Larissa</option>
+                                {owners.map((o) => (
+                                    <option key={o} value={o}>{o}</option>
+                                ))}
                             </select>
                             <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-[var(--color-text-secondary)]">
                                 <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
@@ -284,7 +309,10 @@ export default function TransactionsPage() {
 
                     {/* Add Transaction Button */}
                     <button
-                        onClick={() => setShowCreateModal(true)}
+                        onClick={() => {
+                            setCreateForm({ ...emptyForm, owner: owners[0] || '' });
+                            setShowCreateModal(true);
+                        }}
                         className="btn btn-primary w-full md:w-auto"
                     >
                         <Plus className="w-4 h-4" />
@@ -395,14 +423,14 @@ export default function TransactionsPage() {
                                                     onChange={(e) => setEditForm({ ...editForm, owner: e.target.value })}
                                                     className="input py-1 px-2 text-sm w-24"
                                                 >
-                                                    {OWNERS.map(o => (
+                                                    {owners.map(o => (
                                                         <option key={o} value={o}>{o}</option>
                                                     ))}
                                                 </select>
                                             ) : (
                                                 <span className={clsx(
                                                     "inline-flex items-center px-2 py-1 rounded-full text-xs font-medium",
-                                                    tx.owner === 'Victor'
+                                                    owners.indexOf(tx.owner) === 0
                                                         ? "bg-blue-100 text-blue-700"
                                                         : "bg-pink-100 text-pink-700"
                                                 )}>
@@ -526,7 +554,7 @@ export default function TransactionsPage() {
                                 <div className="flex items-center gap-2 flex-wrap">
                                     <span className={clsx(
                                         "px-2 py-1 rounded-full text-xs font-medium",
-                                        tx.owner === 'Victor' ? "bg-blue-100 text-blue-700" : "bg-pink-100 text-pink-700"
+                                        owners.indexOf(tx.owner) === 0 ? "bg-blue-100 text-blue-700" : "bg-pink-100 text-pink-700"
                                     )}>
                                         {tx.owner}
                                     </span>
@@ -559,6 +587,31 @@ export default function TransactionsPage() {
                         ))}
                     </div>
                 </>
+            )}
+
+            {/* Pagination Controls */}
+            {totalPages > 1 && (
+                <div className="flex items-center justify-between mt-4 px-2">
+                    <p className="text-sm text-[var(--text-secondary)]">
+                        {totalCount} transações · Página {currentPage + 1} de {totalPages}
+                    </p>
+                    <div className="flex gap-2">
+                        <button
+                            onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
+                            disabled={currentPage === 0}
+                            className="btn btn-ghost text-sm px-3 py-1.5 border border-[var(--border-color)] disabled:opacity-40"
+                        >
+                            Anterior
+                        </button>
+                        <button
+                            onClick={() => setCurrentPage(p => Math.min(totalPages - 1, p + 1))}
+                            disabled={currentPage >= totalPages - 1}
+                            className="btn btn-ghost text-sm px-3 py-1.5 border border-[var(--border-color)] disabled:opacity-40"
+                        >
+                            Próxima
+                        </button>
+                    </div>
+                </div>
             )}
 
             {/* Create Transaction Modal */}
@@ -606,7 +659,7 @@ export default function TransactionsPage() {
                                         onChange={(e) => setCreateForm({ ...createForm, owner: e.target.value })}
                                         className="input w-full"
                                     >
-                                        {OWNERS.map(o => (
+                                        {owners.map(o => (
                                             <option key={o} value={o}>{o}</option>
                                         ))}
                                     </select>

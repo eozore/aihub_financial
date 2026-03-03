@@ -10,13 +10,13 @@ import {
   NetWorthSnapshot,
   NetWorthValidationRow,
   updateNetWorthRow,
+  getOwners,
 } from '@/services/api';
 import { ArrowRight, Loader, Pencil, Save, UploadCloud, Wallet, X } from 'lucide-react';
 import clsx from 'clsx';
 import { Area, AreaChart, Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 const PRIMARY_CHART_COLOR = '#4338ca';
-const OWNERS = ['Victor', 'Larissa'];
 
 const formatCurrency = (value: number) =>
   `R$ ${Number(value || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
@@ -75,10 +75,21 @@ export default function PatrimonioPage() {
   const defaultStartDate = new Date(now.getFullYear(), now.getMonth() - 23, 1);
   const defaultStartMonth = defaultStartDate.toISOString().slice(0, 7);
 
-  const [ownerFilter, setOwnerFilter] = useState('Victor');
+  const [ownerFilter, setOwnerFilter] = useState('');
+  const [owners, setOwners] = useState<string[]>([]);
   const [startMonth, setStartMonth] = useState(defaultStartMonth);
   const [endMonth, setEndMonth] = useState(currentMonth);
   const [loadingData, setLoadingData] = useState(false);
+
+  useEffect(() => {
+    getOwners().then((list) => {
+      setOwners(list);
+      if (list.length > 0 && !ownerFilter) setOwnerFilter(list[0]);
+    }).catch(() => {
+      setOwners(['Victor', 'Larissa']);
+      if (!ownerFilter) setOwnerFilter('Victor');
+    });
+  }, []);
   const [savingRow, setSavingRow] = useState(false);
   const [snapshots, setSnapshots] = useState<NetWorthSnapshot[]>([]);
   const [validationRows, setValidationRows] = useState<NetWorthValidationRow[]>([]);
@@ -218,7 +229,7 @@ export default function PatrimonioPage() {
                 onChange={(e) => setOwnerFilter(e.target.value)}
                 className="input py-1.5 px-2 text-sm w-full sm:w-36"
               >
-                {OWNERS.map((owner) => (
+                {owners.map((owner) => (
                   <option key={owner} value={owner}>
                     {owner}
                   </option>

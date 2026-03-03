@@ -1,20 +1,25 @@
 #!/bin/bash
 set -e
 
-PROJECT_ID="${PROJECT_ID:-aifin-project}"
+# ─── Required environment variables (no hardcoded secrets) ───
+# Set these in your CI/CD pipeline or export before running.
+: "${PROJECT_ID:?ERROR: PROJECT_ID is required}"
+: "${BACKEND_URL:?ERROR: BACKEND_URL is required}"
+: "${FIREBASE_API_KEY:?ERROR: FIREBASE_API_KEY is required}"
+: "${FIREBASE_AUTH_DOMAIN:?ERROR: FIREBASE_AUTH_DOMAIN is required}"
+: "${FIREBASE_PROJECT_ID:?ERROR: FIREBASE_PROJECT_ID is required}"
+: "${FIREBASE_STORAGE_BUCKET:?ERROR: FIREBASE_STORAGE_BUCKET is required}"
+: "${FIREBASE_MESSAGING_SENDER_ID:?ERROR: FIREBASE_MESSAGING_SENDER_ID is required}"
+: "${FIREBASE_APP_ID:?ERROR: FIREBASE_APP_ID is required}"
+
+# ─── Optional with safe defaults ───
 REGION="${REGION:-us-central1}"
 REPO="${REPO:-finance-repo}"
 IMAGE="${IMAGE:-finance-frontend}"
 TAG="${TAG:-latest}"
-BACKEND_URL="${BACKEND_URL:-https://finance-backend-ys7aiaicqa-uc.a.run.app}"
 TENANT_HEADER_NAME="${TENANT_HEADER_NAME:-X-Tenant-ID}"
 DEFAULT_TENANT_ID="${DEFAULT_TENANT_ID:-default}"
-FIREBASE_API_KEY="${FIREBASE_API_KEY:-AIzaSy...}"
-FIREBASE_AUTH_DOMAIN="${FIREBASE_AUTH_DOMAIN:-aifin-project-7321a.firebaseapp.com}"
-FIREBASE_PROJECT_ID="${FIREBASE_PROJECT_ID:-aifin-project-7321a}"
-FIREBASE_STORAGE_BUCKET="${FIREBASE_STORAGE_BUCKET:-aifin-project-7321a.firebasestorage.app}"
-FIREBASE_MESSAGING_SENDER_ID="${FIREBASE_MESSAGING_SENDER_ID:-98752190715}"
-FIREBASE_APP_ID="${FIREBASE_APP_ID:-1:98752190715:web:cf9933d73c437d94cbf85e}"
+
 IMAGE_URI="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$IMAGE:$TAG"
 ACTIVE_PROJECT="$(gcloud config get-value project 2>/dev/null || true)"
 

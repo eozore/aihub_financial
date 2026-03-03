@@ -4,7 +4,7 @@ import { AuthProvider } from "../context/AuthContext";
 
 export const metadata: Metadata = {
   title: "AI Finance | Gestão Financeira Inteligente",
-  description: "Controle financeiro para casais - Victor & Larissa",
+  description: "Controle financeiro inteligente para casais e famílias",
 };
 
 export default function RootLayout({

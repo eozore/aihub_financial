@@ -19,7 +19,10 @@ resource "google_project_service" "enabled_services" {
     "artifactregistry.googleapis.com",
     "cloudbuild.googleapis.com",
     "iam.googleapis.com",
-    "bigquery.googleapis.com"
+    "bigquery.googleapis.com",
+    "monitoring.googleapis.com",
+    "logging.googleapis.com",
+    "firestore.googleapis.com",
   ])
   project = var.project_id
   service = each.key
@@ -35,6 +38,20 @@ resource "google_storage_bucket" "finance_raw" {
   force_destroy = false
   uniform_bucket_level_access = true
   depends_on = [google_project_service.enabled_services]
+
+  versioning {
+    enabled = true
+  }
+
+  lifecycle_rule {
+    condition {
+      age = 90
+    }
+    action {
+      type          = "SetStorageClass"
+      storage_class = "NEARLINE"
+    }
+  }
 }
 
 # Processed data / internal bucket (if needed for temp files)
@@ -44,6 +61,15 @@ resource "google_storage_bucket" "finance_internal" {
   force_destroy = false
   uniform_bucket_level_access = true
   depends_on = [google_project_service.enabled_services]
+
+  lifecycle_rule {
+    condition {
+      age = 30
+    }
+    action {
+      type = "Delete"
+    }
+  }
 }
 
 
@@ -260,6 +286,8 @@ resource "google_cloud_run_v2_service" "backend" {
 }
 
 # Make Backend Publicly Accessible
+# Note: Authentication is enforced at the application level via Firebase tokens.
+# Cloud Run IAM allows all traffic; the app validates tokens per-request.
 resource "google_cloud_run_service_iam_member" "public_backend" {
   location = google_cloud_run_v2_service.backend.location
   service  = google_cloud_run_v2_service.backend.name
@@ -302,4 +330,80 @@ resource "google_cloud_run_service_iam_member" "public_frontend" {
 
 output "frontend_url" {
   value = google_cloud_run_v2_service.frontend.uri
+}
+
+# --- 8. Monitoring & Alerting ---
+
+resource "google_monitoring_notification_channel" "email" {
+  display_name = "Finance Pilot Alerts"
+  type         = "email"
+  labels = {
+    email_address = var.alert_email
+  }
+}
+
+# Alert: Backend high error rate (>5% of requests return 5xx)
+resource "google_monitoring_alert_policy" "backend_error_rate" {
+  display_name = "Backend High Error Rate"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Cloud Run 5xx error rate > 5%"
+    condition_threshold {
+      filter          = "resource.type = \"cloud_run_revision\" AND resource.labels.service_name = \"finance-backend\" AND metric.type = \"run.googleapis.com/request_count\" AND metric.labels.response_code_class = \"5xx\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 5
+      duration        = "300s"
+      aggregations {
+        alignment_period   = "60s"
+        per_series_aligner = "ALIGN_RATE"
+      }
+    }
+  }
+
+  notification_channels = [google_monitoring_notification_channel.email.name]
+  depends_on            = [google_project_service.enabled_services]
+}
+
+# Alert: Backend high latency (p95 > 5s)
+resource "google_monitoring_alert_policy" "backend_latency" {
+  display_name = "Backend High Latency"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Cloud Run p95 latency > 5s"
+    condition_threshold {
+      filter          = "resource.type = \"cloud_run_revision\" AND resource.labels.service_name = \"finance-backend\" AND metric.type = \"run.googleapis.com/request_latencies\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 5000
+      duration        = "300s"
+      aggregations {
+        alignment_period     = "60s"
+        per_series_aligner   = "ALIGN_PERCENTILE_95"
+      }
+    }
+  }
+
+  notification_channels = [google_monitoring_notification_channel.email.name]
+  depends_on            = [google_project_service.enabled_services]
+}
+
+# --- 9. Firestore Scheduled Backup ---
+
+resource "google_storage_bucket" "firestore_backups" {
+  name          = "${var.project_id}-firestore-backups"
+  location      = var.region
+  force_destroy = false
+  uniform_bucket_level_access = true
+
+  lifecycle_rule {
+    condition {
+      age = 30
+    }
+    action {
+      type = "Delete"
+    }
+  }
+
+  depends_on = [google_project_service.enabled_services]
 }

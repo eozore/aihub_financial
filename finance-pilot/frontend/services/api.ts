@@ -12,7 +12,10 @@ const getApiUrl = () => {
   if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
     return 'http://localhost:8000';
   }
-  return 'https://finance-backend-930725375338.us-central1.run.app';
+  // In production, NEXT_PUBLIC_API_URL must be set at build time.
+  // Falling back to empty string will cause requests to use relative paths.
+  console.warn('NEXT_PUBLIC_API_URL is not set. API calls may fail.');
+  return '';
 };
 
 const API_URL = getApiUrl();
@@ -268,10 +271,12 @@ export const getDashboardSummary = async (
 export const getTransactions = async (
   startMonth: string,
   endMonth?: string,
-  filters?: TransactionFilters
+  filters?: TransactionFilters,
+  limit: number = 200,
+  offset: number = 0,
 ) => {
   const end = endMonth || startMonth;
-  let url = `/transactions?start=${startMonth}&end=${end}`;
+  let url = `/transactions?start=${startMonth}&end=${end}&limit=${limit}&offset=${offset}`;
   if (filters?.owner) url += `&owner=${filters.owner}`;
   if (filters?.txType) url += `&tx_type=${filters.txType}`;
   const response = await api.get(url);
@@ -318,6 +323,11 @@ export const getMe = async (): Promise<MeSummary> => {
     setActiveWorkspace(data.active_workspace_id);
   }
   return data;
+};
+
+export const getOwners = async (): Promise<string[]> => {
+  const response = await api.get('/owners');
+  return response.data?.owners || [];
 };
 
 export const updatePlan = async (planType: 'free' | 'paid') => {

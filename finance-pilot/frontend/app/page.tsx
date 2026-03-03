@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import AppShell from "@/components/AppShell";
 import DashboardCharts from "@/components/DashboardCharts";
 import { Loader, TrendingUp, ArrowRight, Calendar, Filter, Wallet, RefreshCw, Scale, X } from 'lucide-react';
-import { getDashboardSummary, getTrendData, TransactionFilters, syncToDatabase } from '../services/api';
+import { getDashboardSummary, getTrendData, TransactionFilters, syncToDatabase, getOwners } from '../services/api';
 import clsx from 'clsx';
 
 export default function Home() {
@@ -15,6 +15,7 @@ export default function Home() {
   const [data, setData] = useState<any>(null);
   const [trendData, setTrendData] = useState<any>(null);
   const [loadingData, setLoadingData] = useState(false);
+  const [owners, setOwners] = useState<string[]>([]);
 
   // Date range state - default to current month
   const currentMonth = new Date().toISOString().slice(0, 7);
@@ -35,6 +36,10 @@ export default function Home() {
       router.push('/login');
     }
   }, [user, loading, router]);
+
+  useEffect(() => {
+    getOwners().then(setOwners).catch(() => setOwners(['Victor', 'Larissa']));
+  }, []);
 
   useEffect(() => {
     if (user) fetchDashboard();
@@ -81,11 +86,14 @@ export default function Home() {
 
   if (loading || !user) return null;
 
-  const victorTotal = data?.spend_by_person?.find((p: any) => p.name === 'Victor')?.value || 0;
-  const larissaTotal = data?.spend_by_person?.find((p: any) => p.name === 'Larissa')?.value || 0;
-
-  const victorTotalLast = data?.spend_by_person?.find((p: any) => p.name === 'Victor')?.value_last_year || 0;
-  const larissaTotalLast = data?.spend_by_person?.find((p: any) => p.name === 'Larissa')?.value_last_year || 0;
+  const personData = (owners.length > 0 ? owners : ['Victor', 'Larissa']).map((name) => {
+    const person = data?.spend_by_person?.find((p: any) => p.name === name);
+    return {
+      name,
+      value: person?.value || 0,
+      valueLast: person?.value_last_year || 0,
+    };
+  });
 
   const getTrend = (curr: number, prev: number, isDark = false) => {
     if (!prev) return <span className={`text-xs ${isDark ? 'text-white/60' : 'text-gray-400'}`}>Sem dados ant.</span>;
@@ -158,8 +166,9 @@ export default function Home() {
                 className="appearance-none bg-[var(--color-bg-primary)] border-none text-[var(--color-text-primary)] text-sm font-medium py-2 pl-3 pr-8 rounded-lg cursor-pointer hover:bg-[var(--color-bg-accent)] transition-colors focus:ring-2 focus:ring-[var(--color-brand-primary)]"
               >
                 <option value="">Todas Pessoas</option>
-                <option value="Victor">Victor</option>
-                <option value="Larissa">Larissa</option>
+                {owners.map((o) => (
+                  <option key={o} value={o}>{o}</option>
+                ))}
               </select>
               <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-[var(--color-text-secondary)]">
                 <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
@@ -255,39 +264,29 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Victor */}
-            <div className="card stat-card">
-              <div className="flex items-center justify-between mb-3">
-                <span className="stat-label">Victor</span>
-                <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
-                  <span className="text-blue-600 text-xs font-bold">V</span>
+            {/* Per-person cards */}
+            {personData.map((person, idx) => {
+              const colors = ['blue', 'pink', 'emerald', 'amber', 'purple'];
+              const color = colors[idx % colors.length];
+              const initial = person.name.charAt(0).toUpperCase();
+              return (
+                <div key={person.name} className="card stat-card">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="stat-label">{person.name}</span>
+                    <div className={`w-8 h-8 bg-${color}-100 rounded-full flex items-center justify-center`}>
+                      <span className={`text-${color}-600 text-xs font-bold`}>{initial}</span>
+                    </div>
+                  </div>
+                  <p className={`stat-value text-${color}-600 mb-2`}>
+                    R$ {person.value?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    {getTrend(person.value, person.valueLast)}
+                    <span className="text-[10px] text-[var(--color-text-muted)]">vs ano anterior</span>
+                  </div>
                 </div>
-              </div>
-              <p className="stat-value text-blue-600 mb-2">
-                R$ {victorTotal?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-              </p>
-              <div className="flex items-center gap-2">
-                {getTrend(victorTotal, victorTotalLast)}
-                <span className="text-[10px] text-[var(--color-text-muted)]">vs ano anterior</span>
-              </div>
-            </div>
-
-            {/* Larissa */}
-            <div className="card stat-card">
-              <div className="flex items-center justify-between mb-3">
-                <span className="stat-label">Larissa</span>
-                <div className="w-8 h-8 bg-pink-100 rounded-full flex items-center justify-center">
-                  <span className="text-pink-600 text-xs font-bold">L</span>
-                </div>
-              </div>
-              <p className="stat-value text-pink-600 mb-2">
-                R$ {larissaTotal?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-              </p>
-              <div className="flex items-center gap-2">
-                {getTrend(larissaTotal, larissaTotalLast)}
-                <span className="text-[10px] text-[var(--color-text-muted)]">vs ano anterior</span>
-              </div>
-            </div>
+              );
+            })}
 
           </div>
 

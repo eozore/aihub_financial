@@ -1,22 +1,32 @@
 'use client';
 
-import { useState, useRef } from 'react';
-import { uploadCurrentAccount, uploadInvoice, uploadNetWorth } from '../services/api';
+import { useState, useRef, useEffect } from 'react';
+import { uploadCurrentAccount, uploadInvoice, uploadNetWorth, getOwners } from '../services/api';
 import { UploadCloud, FileText, Check, Loader, X } from 'lucide-react';
 import clsx from 'clsx';
 
-const OWNERS = ['Victor', 'Larissa'];
 type UploadType = 'invoice_nubank' | 'net_worth_monthly' | 'current_account';
 
 export default function UploadForm() {
     const [file, setFile] = useState<File | null>(null);
     const [uploadType, setUploadType] = useState<UploadType>('invoice_nubank');
-    const [owner, setOwner] = useState<string>('Victor');
+    const [owners, setOwners] = useState<string[]>([]);
+    const [owner, setOwner] = useState<string>('');
     const [monthRef, setMonthRef] = useState(new Date().toISOString().slice(0, 7));
     const [status, setStatus] = useState<'idle' | 'uploading' | 'success' | 'error'>('idle');
     const [message, setMessage] = useState('');
     const [isDragOver, setIsDragOver] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
+
+    useEffect(() => {
+        getOwners().then((list) => {
+            setOwners(list);
+            if (list.length > 0 && !owner) setOwner(list[0]);
+        }).catch(() => {
+            setOwners(['Victor', 'Larissa']);
+            if (!owner) setOwner('Victor');
+        });
+    }, []);
 
     const handleDrop = (e: React.DragEvent) => {
         e.preventDefault();
@@ -164,7 +174,7 @@ export default function UploadForm() {
                             onChange={(e) => setOwner(e.target.value)}
                             className="input"
                         >
-                            {OWNERS.map(o => (
+                            {owners.map(o => (
                                 <option key={o} value={o}>{o}</option>
                             ))}
                         </select>
