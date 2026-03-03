@@ -1,0 +1,3413 @@
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from google.cloud import storage, bigquery, firestore
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
+import datetime
+import os
+import json
+import sqlite3
+import re
+import uuid
+import hashlib
+from pydantic import BaseModel
+from typing import Optional, List, Literal
+from processor import TransactionProcessor, TABLE_GOLD, TABLE_SILVER
+from pathlib import Path
+
+def _parse_email_list(value: str) -> List[str]:
+    return [
+        item.strip().lower()
+        for item in (value or "").split(",")
+        if item.strip()
+    ]
+
+
+app = FastAPI()
+
+# CORS Configuration
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get(
+        "CORS_ORIGINS",
+        "http://localhost:3000,https://finance-frontend-ys7aiaicqa-uc.a.run.app",
+    ).split(",")
+    if origin.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+PROJECT_ID = os.environ.get("PROJECT_ID", "aifin-project")
+FIREBASE_PROJECT_ID = os.environ.get("FIREBASE_PROJECT_ID", PROJECT_ID)
+BUCKET_RAW = f"{PROJECT_ID}-raw-uploads"
+FIRESTORE_COLLECTION = "transactions"
+TENANT_HEADER_NAME = os.environ.get("TENANT_HEADER_NAME", "X-Tenant-ID")
+DEFAULT_TENANT_ID = os.environ.get("DEFAULT_TENANT_ID", "default")
+TENANT_REQUIRED = os.environ.get("TENANT_REQUIRED", "true").lower() == "true"
+GOOGLE_AUTH_REQUEST = google_requests.Request()
+USERS_COLLECTION = os.environ.get("USERS_COLLECTION", "users")
+WORKSPACES_COLLECTION = os.environ.get("WORKSPACES_COLLECTION", "workspaces")
+WORKSPACE_MEMBERS_COLLECTION = os.environ.get("WORKSPACE_MEMBERS_COLLECTION", "workspace_members")
+WORKSPACE_INVITES_COLLECTION = os.environ.get("WORKSPACE_INVITES_COLLECTION", "workspace_invites")
+NET_WORTH_COLLECTION = os.environ.get("NET_WORTH_COLLECTION", "net_worth_monthly")
+CURRENT_ACCOUNT_COLLECTION = os.environ.get("CURRENT_ACCOUNT_COLLECTION", "current_account_movements")
+AUTO_JOIN_LEGACY_WORKSPACE = os.environ.get("AUTO_JOIN_LEGACY_WORKSPACE", "true").lower() == "true"
+DEFAULT_LEGACY_MEMBER_LIMIT = int(os.environ.get("DEFAULT_LEGACY_MEMBER_LIMIT", "2"))
+LEGACY_SHARED_EMAILS = _parse_email_list(
+    os.environ.get(
+        "LEGACY_SHARED_EMAILS",
+        "victorzore94@gmail.com,lalaacarv@gmail.com",
+    )
+)
+PREMIUM_EMAILS = set(
+    _parse_email_list(
+        os.environ.get(
+            "PREMIUM_EMAILS",
+            "victorzore94@gmail.com,lalaacarv@gmail.com",
+        )
+    )
+)
+ADMIN_EMAILS = set(
+    _parse_email_list(
+        os.environ.get(
+            "ADMIN_EMAILS",
+            "victorzore94@gmail.com",
+        )
+    )
+)
+
+PLAN_LIMITS = {
+    "free": {"max_workspaces": 1, "max_members_per_workspace": 1},
+    "paid": {"max_workspaces": 3, "max_members_per_workspace": 2},
+}
+
+# SQLite / Mock Configuration
+USE_SQLITE = os.environ.get("USE_SQLITE", "false").lower() == "true"
+USE_MOCK = os.environ.get("USE_MOCK_DATA", "false").lower() == "true"
+REQUIRE_AUTH_FOR_DATA = os.environ.get(
+    "REQUIRE_AUTH_FOR_DATA",
+    "false" if USE_SQLITE else "true",
+).lower() == "true"
+MOCK_DATA_PATH = Path(__file__).parent.parent / "data" / "gold_transactions.json"
+
+# Initialize clients
+db_firestore = None
+bq_client = None
+
+if USE_SQLITE:
+    print("Using Local SQLite Database")
+    from database import get_db_connection, init_db
+else:
+    try:
+        # Firestore for CRUD operations
+        db_firestore = firestore.Client(project=PROJECT_ID)
+        print(f"Firestore client initialized for project: {PROJECT_ID}")
+        
+        # BigQuery for analytics
+        bq_client = bigquery.Client(project=PROJECT_ID)
+        print(f"BigQuery client initialized for project: {PROJECT_ID}")
+    except Exception as e:
+        print(f"Warning: Could not initialize cloud clients: {e}")
+        USE_MOCK = True
+
+class TenantContext(BaseModel):
+    tenant_id: str
+    user_id: Optional[str] = None
+    user_email: Optional[str] = None
+
+def _normalize_owner(owner: Optional[str]) -> str:
+    normalized = (owner or "").strip().lower()
+    if normalized == "victor":
+        return "Victor"
+    if normalized in {"larissa", "lala"}:
+        return "Larissa"
+    raise HTTPException(status_code=400, detail="Owner must be Victor or Larissa")
+
+def _parse_br_money(value: Optional[object]) -> Optional[float]:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw or raw.lower() == "nan":
+        return None
+    normalized = raw.replace("R$", "").replace(" ", "")
+    normalized = normalized.replace(".", "").replace(",", ".")
+    try:
+        return float(normalized)
+    except Exception:
+        return None
+
+def _parse_br_percent(value: Optional[object]) -> Optional[float]:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw or raw.lower() == "nan":
+        return None
+    normalized = raw.replace("%", "").replace(" ", "")
+    normalized = normalized.replace(".", "").replace(",", ".")
+    try:
+        return float(normalized) / 100.0
+    except Exception:
+        return None
+
+def _parse_month_ref(value: Optional[object]) -> Optional[str]:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        month_str, year_str = raw.split("/", 1)
+        month = int(month_str)
+        year = int(year_str)
+        if month < 1 or month > 12:
+            return None
+        if year < 1900 or year > 2100:
+            return None
+        return f"{year:04d}-{month:02d}"
+    except Exception:
+        return None
+
+def _parse_ddmmyyyy_to_iso(value: Optional[object]) -> Optional[str]:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        day_str, month_str, year_str = raw.split("/", 2)
+        day = int(day_str)
+        month = int(month_str)
+        year = int(year_str)
+        parsed = datetime.date(year, month, day)
+        return parsed.isoformat()
+    except Exception:
+        return None
+
+def _parse_signed_amount(value: Optional[object]) -> Optional[float]:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    normalized = raw.replace("R$", "").replace(" ", "")
+    if "," in normalized:
+        normalized = normalized.replace(".", "").replace(",", ".")
+    try:
+        return float(normalized)
+    except Exception:
+        return None
+
+def _category_for_current_account(description: str, is_card_invoice_payment: bool) -> str:
+    lowered = description.lower()
+    if is_card_invoice_payment:
+        return "Pagamento de fatura"
+    if "boleto" in lowered:
+        return "Boletos"
+    if "imposto" in lowered or "receita federal" in lowered:
+        return "Impostos"
+    if "transfer" in lowered or "pix" in lowered:
+        return "Transferências"
+    return "Conta Corrente"
+
+def _sanitize_tenant_id(raw_tenant: Optional[str]) -> Optional[str]:
+    if raw_tenant is None:
+        return None
+    tenant_id = raw_tenant.strip()
+    if not tenant_id:
+        return None
+    if len(tenant_id) > 64 or not re.fullmatch(r"[A-Za-z0-9_.-]+", tenant_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid tenant_id. Use only letters, numbers, '.', '_' or '-'."
+        )
+    return tenant_id
+
+def _extract_tenant_from_claims(claims: dict) -> Optional[str]:
+    claim_tenant = claims.get("tenant_id")
+    if isinstance(claim_tenant, str) and claim_tenant.strip():
+        return claim_tenant.strip()
+
+    firebase_claim = claims.get("firebase")
+    if isinstance(firebase_claim, dict):
+        firebase_tenant = firebase_claim.get("tenant")
+        if isinstance(firebase_tenant, str) and firebase_tenant.strip():
+            return firebase_tenant.strip()
+
+    return None
+
+def get_tenant_context(request: Request) -> TenantContext:
+    header_tenant = _sanitize_tenant_id(request.headers.get(TENANT_HEADER_NAME))
+    token_tenant = None
+    user_id = None
+    user_email = None
+
+    auth_header = request.headers.get("Authorization")
+    if auth_header:
+        try:
+            scheme, token = auth_header.split(" ", 1)
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail="Invalid Authorization header format") from exc
+
+        if scheme.lower() != "bearer" or not token.strip():
+            raise HTTPException(status_code=401, detail="Invalid Authorization header")
+
+        try:
+            claims = google_id_token.verify_firebase_token(
+                token.strip(),
+                GOOGLE_AUTH_REQUEST,
+                audience=FIREBASE_PROJECT_ID,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=401, detail="Invalid Firebase token") from exc
+
+        if not claims:
+            raise HTTPException(status_code=401, detail="Invalid Firebase token")
+
+        user_id = claims.get("uid") or claims.get("sub")
+        user_email = claims.get("email")
+        token_tenant = _sanitize_tenant_id(_extract_tenant_from_claims(claims))
+
+    if token_tenant and header_tenant and token_tenant != header_tenant:
+        raise HTTPException(status_code=403, detail="Tenant mismatch between token and header")
+
+    tenant_id = None
+    if user_id:
+        profile = ensure_user_profile(user_id=user_id, email=user_email)
+        workspaces = _list_user_workspaces(user_id)
+        workspace_ids = {ws["id"] for ws in workspaces}
+        requested_workspace = token_tenant or header_tenant
+
+        if requested_workspace:
+            if requested_workspace in workspace_ids:
+                tenant_id = requested_workspace
+            else:
+                fallback_workspace_id = profile.get("active_workspace_id")
+                if fallback_workspace_id not in workspace_ids:
+                    fallback_workspace_id = workspaces[0]["id"] if workspaces else None
+
+                if not fallback_workspace_id:
+                    raise HTTPException(status_code=403, detail="User does not have access to this workspace")
+
+                tenant_id = fallback_workspace_id
+
+            if profile.get("active_workspace_id") != tenant_id:
+                _upsert_user_profile(
+                    user_id=user_id,
+                    email=user_email,
+                    plan_type=profile.get("plan_type", "free"),
+                    active_workspace_id=tenant_id,
+                )
+        else:
+            active_workspace_id = profile.get("active_workspace_id")
+            if active_workspace_id and active_workspace_id in workspace_ids:
+                tenant_id = active_workspace_id
+            elif workspaces:
+                tenant_id = workspaces[0]["id"]
+                _upsert_user_profile(
+                    user_id=user_id,
+                    email=user_email,
+                    plan_type=profile.get("plan_type", "free"),
+                    active_workspace_id=tenant_id,
+                )
+
+    if not tenant_id:
+        tenant_id = token_tenant or header_tenant or _sanitize_tenant_id(DEFAULT_TENANT_ID)
+
+    if TENANT_REQUIRED and not tenant_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tenant is required. Provide {TENANT_HEADER_NAME} or configure DEFAULT_TENANT_ID.",
+        )
+
+    return TenantContext(
+        tenant_id=tenant_id or "default",
+        user_id=user_id,
+        user_email=user_email,
+    )
+
+def ensure_sqlite_tenant_column():
+    if not USE_SQLITE:
+        return
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("PRAGMA table_info(transactions_gold)")
+    cols = {row[1] for row in c.fetchall()}
+
+    if "tenant_id" not in cols:
+        c.execute("ALTER TABLE transactions_gold ADD COLUMN tenant_id TEXT")
+
+    c.execute(
+        "UPDATE transactions_gold SET tenant_id = ? WHERE tenant_id IS NULL OR tenant_id = ''",
+        (DEFAULT_TENANT_ID,),
+    )
+    conn.commit()
+    conn.close()
+
+def ensure_sqlite_financial_tables():
+    if not USE_SQLITE:
+        return
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='net_worth_monthly'")
+    has_net_worth_table = c.fetchone() is not None
+    if has_net_worth_table:
+        c.execute("PRAGMA table_info(net_worth_monthly)")
+        net_worth_info = c.fetchall()
+        pk_columns = [row[1] for row in net_worth_info if row[5] > 0]
+        needs_migration = pk_columns == ["tenant_id", "month_ref"]
+        if needs_migration:
+            c.execute("ALTER TABLE net_worth_monthly RENAME TO net_worth_monthly_legacy")
+            c.execute(
+                """
+                CREATE TABLE net_worth_monthly (
+                    tenant_id TEXT NOT NULL,
+                    owner TEXT NOT NULL DEFAULT 'Victor',
+                    month_ref TEXT NOT NULL,
+                    salary REAL,
+                    other_income REAL,
+                    income_total REAL,
+                    expense_fixed REAL,
+                    expense_variable REAL,
+                    expense_total REAL,
+                    cash_end_balance REAL,
+                    net_worth_total REAL,
+                    debt_ratio REAL,
+                    notes TEXT,
+                    updated_at TIMESTAMP
+                )
+                """
+            )
+            c.execute(
+                """
+                INSERT INTO net_worth_monthly (
+                    tenant_id,
+                    owner,
+                    month_ref,
+                    salary,
+                    other_income,
+                    income_total,
+                    expense_fixed,
+                    expense_variable,
+                    expense_total,
+                    cash_end_balance,
+                    net_worth_total,
+                    debt_ratio,
+                    notes,
+                    updated_at
+                )
+                SELECT
+                    tenant_id,
+                    'Victor' AS owner,
+                    month_ref,
+                    salary,
+                    other_income,
+                    income_total,
+                    expense_fixed,
+                    expense_variable,
+                    expense_total,
+                    cash_end_balance,
+                    net_worth_total,
+                    debt_ratio,
+                    notes,
+                    updated_at
+                FROM net_worth_monthly_legacy
+                """
+            )
+            c.execute("DROP TABLE net_worth_monthly_legacy")
+    else:
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS net_worth_monthly (
+                tenant_id TEXT NOT NULL,
+                owner TEXT NOT NULL DEFAULT 'Victor',
+                month_ref TEXT NOT NULL,
+                salary REAL,
+                other_income REAL,
+                income_total REAL,
+                expense_fixed REAL,
+                expense_variable REAL,
+                expense_total REAL,
+                cash_end_balance REAL,
+                net_worth_total REAL,
+                debt_ratio REAL,
+                notes TEXT,
+                updated_at TIMESTAMP
+            )
+            """
+        )
+    c.execute("PRAGMA table_info(net_worth_monthly)")
+    net_worth_cols = {row[1] for row in c.fetchall()}
+    if "owner" not in net_worth_cols:
+        c.execute("ALTER TABLE net_worth_monthly ADD COLUMN owner TEXT NOT NULL DEFAULT 'Victor'")
+
+    c.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_net_worth_tenant_owner_month
+        ON net_worth_monthly (tenant_id, owner, month_ref)
+        """
+    )
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS current_account_movements (
+            tenant_id TEXT NOT NULL,
+            owner TEXT NOT NULL,
+            movement_id TEXT NOT NULL,
+            date DATE,
+            month_ref TEXT,
+            amount_signed REAL,
+            description TEXT,
+            source_file TEXT,
+            is_card_invoice_payment INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP
+        )
+        """
+    )
+    c.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_current_account_movement_id
+        ON current_account_movements (tenant_id, owner, movement_id)
+        """
+    )
+
+    conn.commit()
+    conn.close()
+
+if USE_SQLITE:
+    init_db()
+    ensure_sqlite_tenant_column()
+    ensure_sqlite_financial_tables()
+
+def ensure_bigquery_tenant_columns():
+    if USE_SQLITE or USE_MOCK or not bq_client:
+        return
+
+    for table_name in [TABLE_GOLD, TABLE_SILVER]:
+        try:
+            table = bq_client.get_table(table_name)
+            field_names = {field.name for field in table.schema}
+            if "tenant_id" in field_names:
+                continue
+
+            table.schema = list(table.schema) + [bigquery.SchemaField("tenant_id", "STRING")]
+            bq_client.update_table(table, ["schema"])
+            print(f"Added tenant_id column to {table_name}")
+        except Exception as exc:
+            print(f"Warning: could not ensure tenant_id column on {table_name}: {exc}")
+
+ensure_bigquery_tenant_columns()
+
+def _utc_now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+def _normalize_plan(plan_type: Optional[str]) -> str:
+    normalized = (plan_type or "free").strip().lower()
+    if normalized not in PLAN_LIMITS:
+        raise HTTPException(status_code=400, detail=f"Invalid plan_type: {plan_type}")
+    return normalized
+
+def _plan_limits(plan_type: Optional[str]) -> dict:
+    return PLAN_LIMITS[_normalize_plan(plan_type)]
+
+def ensure_sqlite_workspace_tables():
+    if not USE_SQLITE:
+        return
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            user_id TEXT PRIMARY KEY,
+            email TEXT,
+            plan_type TEXT NOT NULL DEFAULT 'free',
+            is_admin INTEGER NOT NULL DEFAULT 0,
+            active_workspace_id TEXT,
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP
+        )
+        """
+    )
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS workspaces (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            owner_user_id TEXT NOT NULL,
+            member_limit INTEGER,
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP
+        )
+        """
+    )
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS workspace_members (
+            workspace_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            created_at TIMESTAMP,
+            PRIMARY KEY (workspace_id, user_id)
+        )
+        """
+    )
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS workspace_invites (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT,
+            inviter_user_id TEXT NOT NULL,
+            invitee_email TEXT NOT NULL,
+            invite_mode TEXT NOT NULL,
+            target_workspace_name TEXT,
+            status TEXT NOT NULL,
+            created_at TIMESTAMP,
+            accepted_at TIMESTAMP
+        )
+        """
+    )
+    c.execute("PRAGMA table_info(users)")
+    user_columns = {row[1] for row in c.fetchall()}
+    if "is_admin" not in user_columns:
+        c.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+    conn.commit()
+    conn.close()
+
+def _sqlite_row_to_dict(row):
+    if row is None:
+        return None
+    return dict(row)
+
+def _get_user_profile(user_id: str):
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        row = _sqlite_row_to_dict(c.fetchone())
+        conn.close()
+        if row is not None:
+            row["is_admin"] = bool(row.get("is_admin"))
+        return row
+
+    if not db_firestore:
+        return None
+    doc = db_firestore.collection(USERS_COLLECTION).document(user_id).get()
+    if not doc.exists:
+        return None
+    data = doc.to_dict() or {}
+    data["user_id"] = user_id
+    data["is_admin"] = bool(data.get("is_admin", False))
+    return data
+
+def _upsert_user_profile(
+    user_id: str,
+    email: Optional[str] = None,
+    plan_type: Optional[str] = None,
+    is_admin: Optional[bool] = None,
+    active_workspace_id: Optional[str] = None,
+):
+    existing = _get_user_profile(user_id) or {}
+    now = _utc_now_iso()
+    payload = {
+        "user_id": user_id,
+        "email": email if email is not None else existing.get("email"),
+        "plan_type": _normalize_plan(plan_type if plan_type is not None else existing.get("plan_type", "free")),
+        "is_admin": bool(is_admin if is_admin is not None else existing.get("is_admin", False)),
+        "active_workspace_id": active_workspace_id if active_workspace_id is not None else existing.get("active_workspace_id"),
+        "created_at": existing.get("created_at") or now,
+        "updated_at": now,
+    }
+
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT OR REPLACE INTO users
+            (user_id, email, plan_type, is_admin, active_workspace_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload["user_id"],
+                payload["email"],
+                payload["plan_type"],
+                1 if payload["is_admin"] else 0,
+                payload["active_workspace_id"],
+                payload["created_at"],
+                payload["updated_at"],
+            ),
+        )
+        conn.commit()
+        conn.close()
+        return payload
+
+    if not db_firestore:
+        return payload
+    db_firestore.collection(USERS_COLLECTION).document(user_id).set(payload)
+    return payload
+
+def _get_workspace(workspace_id: str):
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,))
+        row = _sqlite_row_to_dict(c.fetchone())
+        conn.close()
+        return row
+
+    if not db_firestore:
+        return None
+    doc = db_firestore.collection(WORKSPACES_COLLECTION).document(workspace_id).get()
+    if not doc.exists:
+        return None
+    data = doc.to_dict() or {}
+    data["id"] = workspace_id
+    return data
+
+def _create_workspace(workspace_id: str, name: str, owner_user_id: str, member_limit: Optional[int] = None):
+    now = _utc_now_iso()
+    payload = {
+        "id": workspace_id,
+        "name": name.strip(),
+        "owner_user_id": owner_user_id,
+        "member_limit": member_limit,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT OR REPLACE INTO workspaces
+            (id, name, owner_user_id, member_limit, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload["id"],
+                payload["name"],
+                payload["owner_user_id"],
+                payload["member_limit"],
+                payload["created_at"],
+                payload["updated_at"],
+            ),
+        )
+        conn.commit()
+        conn.close()
+        return payload
+
+    if db_firestore:
+        db_firestore.collection(WORKSPACES_COLLECTION).document(workspace_id).set(payload)
+    return payload
+
+
+def _update_workspace(workspace_id: str, *, name: Optional[str] = None, member_limit: Optional[int] = None):
+    workspace = _get_workspace(workspace_id)
+    if not workspace:
+        return None
+
+    now = _utc_now_iso()
+    next_name = name.strip() if isinstance(name, str) else workspace.get("name")
+    next_member_limit = member_limit if member_limit is not None else workspace.get("member_limit")
+
+    payload = {
+        "id": workspace_id,
+        "name": next_name,
+        "owner_user_id": workspace.get("owner_user_id"),
+        "member_limit": next_member_limit,
+        "created_at": workspace.get("created_at") or now,
+        "updated_at": now,
+    }
+
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            """
+            UPDATE workspaces
+            SET name = ?, member_limit = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (payload["name"], payload["member_limit"], payload["updated_at"], workspace_id),
+        )
+        conn.commit()
+        conn.close()
+        return payload
+
+    if db_firestore:
+        db_firestore.collection(WORKSPACES_COLLECTION).document(workspace_id).update(
+            {
+                "name": payload["name"],
+                "member_limit": payload["member_limit"],
+                "updated_at": payload["updated_at"],
+            }
+        )
+    return payload
+
+def _get_workspace_member(workspace_id: str, user_id: str):
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?",
+            (workspace_id, user_id),
+        )
+        row = _sqlite_row_to_dict(c.fetchone())
+        conn.close()
+        return row
+
+    if not db_firestore:
+        return None
+    doc_id = f"{workspace_id}:{user_id}"
+    doc = db_firestore.collection(WORKSPACE_MEMBERS_COLLECTION).document(doc_id).get()
+    if not doc.exists:
+        return None
+    data = doc.to_dict() or {}
+    data["id"] = doc_id
+    return data
+
+def _add_workspace_member(workspace_id: str, user_id: str, role: str):
+    existing = _get_workspace_member(workspace_id, user_id)
+    if existing:
+        return existing
+
+    payload = {
+        "workspace_id": workspace_id,
+        "user_id": user_id,
+        "role": role,
+        "created_at": _utc_now_iso(),
+    }
+
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT OR REPLACE INTO workspace_members
+            (workspace_id, user_id, role, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (payload["workspace_id"], payload["user_id"], payload["role"], payload["created_at"]),
+        )
+        conn.commit()
+        conn.close()
+        return payload
+
+    if db_firestore:
+        doc_id = f"{workspace_id}:{user_id}"
+        db_firestore.collection(WORKSPACE_MEMBERS_COLLECTION).document(doc_id).set(payload)
+    return payload
+
+
+def _delete_workspace_member(workspace_id: str, user_id: str):
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?",
+            (workspace_id, user_id),
+        )
+        deleted = c.rowcount
+        conn.commit()
+        conn.close()
+        return deleted > 0
+
+    if db_firestore:
+        doc_id = f"{workspace_id}:{user_id}"
+        db_firestore.collection(WORKSPACE_MEMBERS_COLLECTION).document(doc_id).delete()
+        return True
+
+    return False
+
+def _count_workspace_members(workspace_id: str) -> int:
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM workspace_members WHERE workspace_id = ?", (workspace_id,))
+        count = c.fetchone()[0]
+        conn.close()
+        return count
+
+    if not db_firestore:
+        return 0
+    docs = db_firestore.collection(WORKSPACE_MEMBERS_COLLECTION).where("workspace_id", "==", workspace_id).stream()
+    return sum(1 for _ in docs)
+
+def _list_workspace_members(workspace_id: str) -> List[dict]:
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT m.workspace_id, m.user_id, m.role, m.created_at, u.email
+            FROM workspace_members m
+            LEFT JOIN users u ON u.user_id = m.user_id
+            WHERE m.workspace_id = ?
+            ORDER BY m.created_at ASC
+            """,
+            (workspace_id,),
+        )
+        rows = [dict(row) for row in c.fetchall()]
+        conn.close()
+        return rows
+
+    if not db_firestore:
+        return []
+
+    rows = []
+    docs = db_firestore.collection(WORKSPACE_MEMBERS_COLLECTION).where("workspace_id", "==", workspace_id).stream()
+    for doc in docs:
+        row = doc.to_dict() or {}
+        profile = _get_user_profile(row.get("user_id"))
+        row["email"] = profile.get("email") if profile else None
+        rows.append(row)
+    rows.sort(key=lambda x: x.get("created_at") or "")
+    return rows
+
+def _list_user_workspaces(user_id: str) -> List[dict]:
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT w.id, w.name, w.owner_user_id, w.member_limit, w.created_at, w.updated_at, m.role
+            FROM workspace_members m
+            INNER JOIN workspaces w ON w.id = m.workspace_id
+            WHERE m.user_id = ?
+            ORDER BY w.created_at ASC
+            """,
+            (user_id,),
+        )
+        rows = [dict(row) for row in c.fetchall()]
+        conn.close()
+    else:
+        rows = []
+        if db_firestore:
+            member_docs = db_firestore.collection(WORKSPACE_MEMBERS_COLLECTION).where("user_id", "==", user_id).stream()
+            for member_doc in member_docs:
+                member_data = member_doc.to_dict() or {}
+                workspace = _get_workspace(member_data.get("workspace_id"))
+                if not workspace:
+                    continue
+                workspace["role"] = member_data.get("role")
+                rows.append(workspace)
+
+    for row in rows:
+        row["member_count"] = _count_workspace_members(row["id"])
+    return rows
+
+
+def _delete_workspace(workspace_id: str):
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
+        deleted = c.rowcount
+        c.execute("DELETE FROM workspace_members WHERE workspace_id = ?", (workspace_id,))
+        conn.commit()
+        conn.close()
+        return deleted > 0
+
+    if db_firestore:
+        workspace_member_docs = db_firestore.collection(WORKSPACE_MEMBERS_COLLECTION).where(
+            "workspace_id", "==", workspace_id
+        ).stream()
+        for member_doc in workspace_member_docs:
+            member_doc.reference.delete()
+        db_firestore.collection(WORKSPACES_COLLECTION).document(workspace_id).delete()
+        return True
+
+    return False
+
+
+def _personal_workspace_id_for_user(user_id: str) -> str:
+    return f"ws-u-{uuid.uuid5(uuid.NAMESPACE_DNS, user_id).hex[:12]}"
+
+def _create_workspace_invite(
+    workspace_id: Optional[str],
+    inviter_user_id: str,
+    invitee_email: str,
+    invite_mode: str,
+    target_workspace_name: Optional[str] = None,
+):
+    invite_id = f"inv-{uuid.uuid4().hex[:16]}"
+    payload = {
+        "id": invite_id,
+        "workspace_id": workspace_id,
+        "inviter_user_id": inviter_user_id,
+        "invitee_email": invitee_email.strip().lower(),
+        "invite_mode": invite_mode,
+        "target_workspace_name": target_workspace_name,
+        "status": "pending",
+        "created_at": _utc_now_iso(),
+        "accepted_at": None,
+    }
+
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT INTO workspace_invites
+            (id, workspace_id, inviter_user_id, invitee_email, invite_mode, target_workspace_name, status, created_at, accepted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload["id"],
+                payload["workspace_id"],
+                payload["inviter_user_id"],
+                payload["invitee_email"],
+                payload["invite_mode"],
+                payload["target_workspace_name"],
+                payload["status"],
+                payload["created_at"],
+                payload["accepted_at"],
+            ),
+        )
+        conn.commit()
+        conn.close()
+        return payload
+
+    if db_firestore:
+        db_firestore.collection(WORKSPACE_INVITES_COLLECTION).document(invite_id).set(payload)
+    return payload
+
+def _get_workspace_invite(invite_id: str):
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT * FROM workspace_invites WHERE id = ?", (invite_id,))
+        row = _sqlite_row_to_dict(c.fetchone())
+        conn.close()
+        return row
+
+    if not db_firestore:
+        return None
+    doc = db_firestore.collection(WORKSPACE_INVITES_COLLECTION).document(invite_id).get()
+    if not doc.exists:
+        return None
+    data = doc.to_dict() or {}
+    data["id"] = invite_id
+    return data
+
+def _update_workspace_invite(invite_id: str, status: str, accepted_at: Optional[str] = None):
+    invite = _get_workspace_invite(invite_id)
+    if not invite:
+        return None
+
+    invite["status"] = status
+    invite["accepted_at"] = accepted_at
+
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "UPDATE workspace_invites SET status = ?, accepted_at = ? WHERE id = ?",
+            (status, accepted_at, invite_id),
+        )
+        conn.commit()
+        conn.close()
+        return invite
+
+    if db_firestore:
+        db_firestore.collection(WORKSPACE_INVITES_COLLECTION).document(invite_id).update(
+            {"status": status, "accepted_at": accepted_at}
+        )
+    return invite
+
+def _list_pending_invites_for_email(email: str) -> List[dict]:
+    normalized_email = email.strip().lower()
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT * FROM workspace_invites
+            WHERE invitee_email = ? AND status = 'pending'
+            ORDER BY created_at DESC
+            """,
+            (normalized_email,),
+        )
+        rows = [dict(row) for row in c.fetchall()]
+        conn.close()
+        return rows
+
+    if not db_firestore:
+        return []
+    docs = db_firestore.collection(WORKSPACE_INVITES_COLLECTION).where("invitee_email", "==", normalized_email).where(
+        "status", "==", "pending"
+    ).stream()
+    rows = [doc.to_dict() or {} for doc in docs]
+    rows.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    return rows
+
+def _list_sent_invites(inviter_user_id: str) -> List[dict]:
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT * FROM workspace_invites
+            WHERE inviter_user_id = ?
+            ORDER BY created_at DESC
+            """,
+            (inviter_user_id,),
+        )
+        rows = [dict(row) for row in c.fetchall()]
+        conn.close()
+        return rows
+
+    if not db_firestore:
+        return []
+    docs = db_firestore.collection(WORKSPACE_INVITES_COLLECTION).where("inviter_user_id", "==", inviter_user_id).stream()
+    rows = [doc.to_dict() or {} for doc in docs]
+    rows.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    return rows
+
+def ensure_default_workspace_exists(owner_user_id: Optional[str] = None):
+    workspace = _get_workspace(DEFAULT_TENANT_ID)
+    if workspace:
+        return workspace
+
+    owner_id = owner_user_id or "legacy-owner"
+    return _create_workspace(
+        workspace_id=DEFAULT_TENANT_ID,
+        name="Painel Principal",
+        owner_user_id=owner_id,
+        member_limit=DEFAULT_LEGACY_MEMBER_LIMIT,
+    )
+
+
+def _tenant_has_data(tenant_id: Optional[str]) -> bool:
+    if not tenant_id:
+        return False
+
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "SELECT 1 FROM transactions_gold WHERE tenant_id = ? LIMIT 1",
+            (tenant_id,),
+        )
+        has_data = c.fetchone() is not None
+        conn.close()
+        return has_data
+
+    if USE_MOCK:
+        mock_data = load_mock_data()
+        return any((row.get("tenant_id") or DEFAULT_TENANT_ID) == tenant_id for row in mock_data)
+
+    if not bq_client:
+        return False
+
+    query = f"""
+        SELECT 1
+        FROM `{TABLE_GOLD}`
+        WHERE tenant_id = @tenant_id
+        LIMIT 1
+    """
+    job = bq_client.query(
+        query,
+        job_config=bigquery.QueryJobConfig(
+            query_parameters=[bigquery.ScalarQueryParameter("tenant_id", "STRING", tenant_id)]
+        ),
+    )
+    return any(True for _ in job.result())
+
+
+def _normalize_email(email: Optional[str]) -> str:
+    return (email or "").strip().lower()
+
+
+def _is_premium_email(email: Optional[str]) -> bool:
+    return _normalize_email(email) in PREMIUM_EMAILS
+
+
+def _is_admin_email(email: Optional[str]) -> bool:
+    return _normalize_email(email) in ADMIN_EMAILS
+
+
+def _can_auto_join_legacy(email: Optional[str]) -> bool:
+    normalized_email = _normalize_email(email)
+    return AUTO_JOIN_LEGACY_WORKSPACE and (
+        not LEGACY_SHARED_EMAILS or normalized_email in LEGACY_SHARED_EMAILS
+    )
+
+
+def _list_all_user_profiles() -> List[dict]:
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT * FROM users")
+        rows = [dict(row) for row in c.fetchall()]
+        conn.close()
+        for row in rows:
+            row["is_admin"] = bool(row.get("is_admin"))
+        return rows
+
+    if not db_firestore:
+        return []
+
+    rows = []
+    for doc in db_firestore.collection(USERS_COLLECTION).stream():
+        data = doc.to_dict() or {}
+        data["user_id"] = doc.id
+        data["is_admin"] = bool(data.get("is_admin", False))
+        rows.append(data)
+    return rows
+
+
+def bootstrap_configured_accounts():
+    if not AUTO_JOIN_LEGACY_WORKSPACE and not PREMIUM_EMAILS and not ADMIN_EMAILS:
+        return
+
+    default_workspace = ensure_default_workspace_exists()
+    default_has_data = _tenant_has_data(DEFAULT_TENANT_ID)
+    configured_emails = set(LEGACY_SHARED_EMAILS) | PREMIUM_EMAILS | ADMIN_EMAILS
+    if not configured_emails:
+        return
+
+    for profile in _list_all_user_profiles():
+        email = _normalize_email(profile.get("email"))
+        if email not in configured_emails:
+            continue
+
+        user_id = profile["user_id"]
+        current_plan = profile.get("plan_type", "free")
+        desired_plan = "paid" if _is_premium_email(email) else current_plan
+        desired_admin = bool(profile.get("is_admin")) or _is_admin_email(email)
+        desired_active_workspace = profile.get("active_workspace_id")
+
+        if _can_auto_join_legacy(email):
+            membership = _get_workspace_member(DEFAULT_TENANT_ID, user_id)
+            if not membership:
+                current_members = _count_workspace_members(DEFAULT_TENANT_ID)
+                role = "owner" if current_members == 0 else "member"
+                _add_workspace_member(DEFAULT_TENANT_ID, user_id, role)
+
+            if default_has_data and desired_active_workspace != DEFAULT_TENANT_ID:
+                active_has_data = _tenant_has_data(desired_active_workspace)
+                if not active_has_data:
+                    desired_active_workspace = DEFAULT_TENANT_ID
+
+        _upsert_user_profile(
+            user_id=user_id,
+            email=email or profile.get("email"),
+            plan_type=desired_plan,
+            is_admin=desired_admin,
+            active_workspace_id=desired_active_workspace,
+        )
+
+
+def ensure_user_profile(user_id: str, email: Optional[str]) -> dict:
+    normalized_email = _normalize_email(email)
+    profile = _get_user_profile(user_id)
+    desired_plan = "paid" if _is_premium_email(normalized_email) else "free"
+    desired_admin = _is_admin_email(normalized_email)
+
+    if not profile:
+        profile = _upsert_user_profile(
+            user_id=user_id,
+            email=normalized_email or email,
+            plan_type=desired_plan,
+            is_admin=desired_admin,
+        )
+    elif email and profile.get("email") != email:
+        profile = _upsert_user_profile(
+            user_id=user_id,
+            email=normalized_email or email,
+            plan_type=profile.get("plan_type", "free"),
+            is_admin=bool(profile.get("is_admin", False)) or desired_admin,
+            active_workspace_id=profile.get("active_workspace_id"),
+        )
+    elif (
+        _is_premium_email(normalized_email)
+        and profile.get("plan_type") != "paid"
+    ) or (_is_admin_email(normalized_email) and not profile.get("is_admin", False)):
+        profile = _upsert_user_profile(
+            user_id=user_id,
+            email=normalized_email or profile.get("email"),
+            plan_type="paid" if _is_premium_email(normalized_email) else profile.get("plan_type", "free"),
+            is_admin=bool(profile.get("is_admin", False)) or _is_admin_email(normalized_email),
+            active_workspace_id=profile.get("active_workspace_id"),
+        )
+
+    can_auto_join_legacy = _can_auto_join_legacy(normalized_email or profile.get("email"))
+    if can_auto_join_legacy:
+        ensure_default_workspace_exists(owner_user_id=user_id)
+        legacy_membership = _get_workspace_member(DEFAULT_TENANT_ID, user_id)
+        if not legacy_membership:
+            legacy_members = _count_workspace_members(DEFAULT_TENANT_ID)
+            role = "owner" if legacy_members == 0 else "member"
+            _add_workspace_member(DEFAULT_TENANT_ID, user_id, role)
+
+    workspaces = _list_user_workspaces(user_id)
+    if not workspaces:
+        active_workspace_id = None
+        if can_auto_join_legacy:
+            ensure_default_workspace_exists(owner_user_id=user_id)
+            legacy_members = _count_workspace_members(DEFAULT_TENANT_ID)
+            if legacy_members < DEFAULT_LEGACY_MEMBER_LIMIT:
+                role = "owner" if legacy_members == 0 else "member"
+                _add_workspace_member(DEFAULT_TENANT_ID, user_id, role)
+                active_workspace_id = DEFAULT_TENANT_ID
+
+        if not active_workspace_id:
+            personal_workspace_id = _personal_workspace_id_for_user(user_id)
+            personal_limit = _plan_limits(profile.get("plan_type", "free"))["max_members_per_workspace"]
+            _create_workspace(
+                workspace_id=personal_workspace_id,
+                name="Meu Painel",
+                owner_user_id=user_id,
+                member_limit=personal_limit,
+            )
+            _add_workspace_member(personal_workspace_id, user_id, "owner")
+            active_workspace_id = personal_workspace_id
+
+        profile = _upsert_user_profile(
+            user_id=user_id,
+            email=normalized_email or email,
+            plan_type=profile.get("plan_type", "free"),
+            is_admin=bool(profile.get("is_admin", False)),
+            active_workspace_id=active_workspace_id,
+        )
+        return profile
+
+    workspace_ids = {ws["id"] for ws in workspaces}
+    if not profile.get("active_workspace_id") or profile.get("active_workspace_id") not in workspace_ids:
+        profile = _upsert_user_profile(
+            user_id=user_id,
+            email=profile.get("email"),
+            plan_type=profile.get("plan_type", "free"),
+            is_admin=bool(profile.get("is_admin", False)),
+            active_workspace_id=workspaces[0]["id"],
+        )
+
+    return profile
+
+if USE_SQLITE:
+    ensure_sqlite_workspace_tables()
+
+if AUTO_JOIN_LEGACY_WORKSPACE:
+    ensure_default_workspace_exists()
+
+try:
+    bootstrap_configured_accounts()
+except Exception as exc:
+    print(f"Warning: failed to bootstrap configured accounts: {exc}")
+
+def load_mock_data() -> List[dict]:
+    """Load mock data from JSON file and normalize it."""
+    if not MOCK_DATA_PATH.exists():
+        print(f"Mock data not found at {MOCK_DATA_PATH}")
+        return []
+    
+    with open(MOCK_DATA_PATH, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    # Normalize data - parse dates and map legacy fields
+    for tx in data:
+        # Parse date from "DD/MM/YYYY HH:MM:SS" to "YYYY-MM-DD"
+        if 'date' in tx and '/' in tx['date']:
+            try:
+                parts = tx['date'].split(' ')[0].split('/')
+                tx['date'] = f"{parts[2]}-{parts[1]}-{parts[0]}"
+            except:
+                pass
+        
+        # Map type_legacy to type
+        if 'type_legacy' in tx and 'type' not in tx:
+            tx['type'] = 'Shared' if tx['type_legacy'] == 'Casal' else 'Individual'
+        
+        # Map group_legacy to category if category is empty
+        if not tx.get('category') and tx.get('group_legacy'):
+            tx['category'] = tx['group_legacy']
+        
+        # Create month_ref from date
+        if 'date' in tx and '-' in tx['date']:
+            tx['month_ref'] = tx['date'][:7]  # YYYY-MM
+        
+        # Normalize owner (Lala -> Larissa)
+        if tx.get('owner') == 'Lala':
+            tx['owner'] = 'Larissa'
+
+        # Default tenant for legacy/mock records
+        tx['tenant_id'] = tx.get('tenant_id') or DEFAULT_TENANT_ID
+    
+    return data
+
+class TransactionUpdate(BaseModel):
+    """Model for updating an existing transaction - all fields optional"""
+    date: Optional[str] = None  # YYYY-MM-DD
+    amount: Optional[float] = None
+    merchant_clean: Optional[str] = None
+    category: Optional[str] = None
+    subcategory: Optional[str] = None
+    owner: Optional[str] = None  # 'Victor' or 'Larissa'
+    type: Optional[str] = None  # 'Individual' or 'Shared'
+
+class TransactionCreate(BaseModel):
+    """Model for creating a new transaction"""
+    date: str  # YYYY-MM-DD
+    amount: float
+    merchant_clean: str
+    category: str
+    subcategory: Optional[str] = None
+    owner: str  # 'Victor' or 'Larissa'
+    type: str  # 'Individual' or 'Shared'
+
+class PlanUpdate(BaseModel):
+    plan_type: Literal["free", "paid"]
+
+class WorkspaceCreate(BaseModel):
+    name: str
+
+
+class WorkspaceUpdate(BaseModel):
+    name: str
+
+class WorkspaceInviteCreate(BaseModel):
+    invitee_email: str
+    invite_mode: Literal["shared", "isolated"] = "shared"
+    target_workspace_name: Optional[str] = None
+
+class NetWorthRowUpdate(BaseModel):
+    salary: Optional[float] = None
+    other_income: Optional[float] = None
+    income_total: Optional[float] = None
+    expense_fixed: Optional[float] = None
+    expense_variable: Optional[float] = None
+    expense_total: Optional[float] = None
+    cash_end_balance: Optional[float] = None
+    net_worth_total: Optional[float] = None
+    debt_ratio: Optional[float] = None
+    notes: Optional[str] = None
+
+@app.get("/")
+def read_root():
+    mode = "sqlite" if USE_SQLITE else ("mock" if USE_MOCK else "bigquery")
+    return {
+        "status": "Finance API is running",
+        "mode": mode,
+        "tenant_header": TENANT_HEADER_NAME,
+    }
+
+def _require_authenticated_user(tenant: TenantContext):
+    if not tenant.user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return tenant.user_id
+
+def _require_data_access(tenant: TenantContext):
+    if REQUIRE_AUTH_FOR_DATA and not tenant.user_id:
+        raise HTTPException(status_code=401, detail="Authentication required for data access")
+
+@app.get("/me")
+def get_me(tenant: TenantContext = Depends(get_tenant_context)):
+    user_id = _require_authenticated_user(tenant)
+    profile = ensure_user_profile(user_id=user_id, email=tenant.user_email)
+    workspaces = _list_user_workspaces(user_id)
+    limits = _plan_limits(profile.get("plan_type", "free"))
+    return {
+        "user_id": user_id,
+        "email": profile.get("email"),
+        "plan_type": profile.get("plan_type"),
+        "is_admin": bool(profile.get("is_admin", False)),
+        "limits": limits,
+        "active_workspace_id": profile.get("active_workspace_id"),
+        "workspace_count": len(workspaces),
+    }
+
+@app.put("/me/plan")
+def update_my_plan(payload: PlanUpdate, tenant: TenantContext = Depends(get_tenant_context)):
+    user_id = _require_authenticated_user(tenant)
+    profile = ensure_user_profile(user_id=user_id, email=tenant.user_email)
+    profile_email = _normalize_email(profile.get("email") or tenant.user_email)
+    if _is_premium_email(profile_email) and payload.plan_type != "paid":
+        raise HTTPException(
+            status_code=403,
+            detail="This account is managed as premium and cannot downgrade from this screen.",
+        )
+    next_plan = _normalize_plan(payload.plan_type)
+    current_plan = _normalize_plan(profile.get("plan_type", "free"))
+
+    if current_plan == next_plan:
+        return {"status": "unchanged", "plan_type": current_plan}
+
+    workspaces = _list_user_workspaces(user_id)
+    owned_workspaces = [ws for ws in workspaces if ws.get("owner_user_id") == user_id]
+    next_limits = _plan_limits(next_plan)
+
+    if len(owned_workspaces) > next_limits["max_workspaces"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Plan {next_plan} allows only {next_limits['max_workspaces']} workspace(s).",
+        )
+
+    for ws in owned_workspaces:
+        if ws.get("member_count", 0) > next_limits["max_members_per_workspace"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Workspace {ws['name']} has {ws['member_count']} members, above plan limit.",
+            )
+
+    updated = _upsert_user_profile(
+        user_id=user_id,
+        email=profile.get("email"),
+        plan_type=next_plan,
+        is_admin=bool(profile.get("is_admin", False)),
+        active_workspace_id=profile.get("active_workspace_id"),
+    )
+    return {"status": "updated", "plan_type": updated.get("plan_type")}
+
+@app.get("/workspaces")
+def list_workspaces(tenant: TenantContext = Depends(get_tenant_context)):
+    user_id = _require_authenticated_user(tenant)
+    profile = ensure_user_profile(user_id=user_id, email=tenant.user_email)
+    workspaces = _list_user_workspaces(user_id)
+    return {
+        "active_workspace_id": profile.get("active_workspace_id"),
+        "workspaces": workspaces,
+    }
+
+@app.post("/workspaces")
+def create_workspace(payload: WorkspaceCreate, tenant: TenantContext = Depends(get_tenant_context)):
+    user_id = _require_authenticated_user(tenant)
+    profile = ensure_user_profile(user_id=user_id, email=tenant.user_email)
+    workspace_name = payload.name.strip()
+    if not workspace_name:
+        raise HTTPException(status_code=400, detail="Workspace name is required")
+
+    limits = _plan_limits(profile.get("plan_type", "free"))
+    owned_workspaces = [ws for ws in _list_user_workspaces(user_id) if ws.get("owner_user_id") == user_id]
+    if len(owned_workspaces) >= limits["max_workspaces"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Plan {profile.get('plan_type')} allows up to {limits['max_workspaces']} workspace(s).",
+        )
+
+    workspace_id = f"ws-{uuid.uuid4().hex[:12]}"
+    workspace = _create_workspace(
+        workspace_id=workspace_id,
+        name=workspace_name,
+        owner_user_id=user_id,
+        member_limit=limits["max_members_per_workspace"],
+    )
+    _add_workspace_member(workspace_id=workspace_id, user_id=user_id, role="owner")
+    _upsert_user_profile(
+        user_id=user_id,
+        email=profile.get("email"),
+        plan_type=profile.get("plan_type", "free"),
+        active_workspace_id=workspace_id,
+    )
+    workspace["member_count"] = 1
+    workspace["role"] = "owner"
+    return {"status": "created", "workspace": workspace}
+
+
+@app.put("/workspaces/{workspace_id}")
+def update_workspace(
+    workspace_id: str,
+    payload: WorkspaceUpdate,
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    user_id = _require_authenticated_user(tenant)
+    workspace = _get_workspace(workspace_id)
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    membership = _get_workspace_member(workspace_id, user_id)
+    if not membership:
+        raise HTTPException(status_code=403, detail="User does not have access to this workspace")
+    if membership.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Only workspace owner can update workspace")
+
+    workspace_name = payload.name.strip()
+    if not workspace_name:
+        raise HTTPException(status_code=400, detail="Workspace name is required")
+    if len(workspace_name) > 80:
+        raise HTTPException(status_code=400, detail="Workspace name is too long")
+
+    updated = _update_workspace(workspace_id, name=workspace_name)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    updated["member_count"] = _count_workspace_members(workspace_id)
+    updated["role"] = membership.get("role")
+    return {"status": "updated", "workspace": updated}
+
+
+@app.delete("/workspaces/{workspace_id}")
+def delete_workspace(workspace_id: str, tenant: TenantContext = Depends(get_tenant_context)):
+    user_id = _require_authenticated_user(tenant)
+    profile = ensure_user_profile(user_id=user_id, email=tenant.user_email)
+    workspace = _get_workspace(workspace_id)
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    membership = _get_workspace_member(workspace_id, user_id)
+    if not membership:
+        raise HTTPException(status_code=403, detail="User does not have access to this workspace")
+    if membership.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Only workspace owner can delete workspace")
+    if workspace.get("owner_user_id") != user_id:
+        raise HTTPException(status_code=403, detail="Only workspace creator can delete workspace")
+    if workspace_id == DEFAULT_TENANT_ID:
+        raise HTTPException(status_code=400, detail="Default workspace cannot be deleted")
+    if _count_workspace_members(workspace_id) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Remove all other members before deleting this workspace.",
+        )
+    if _tenant_has_data(workspace_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Workspace has transactions and cannot be deleted.",
+        )
+
+    _delete_workspace(workspace_id)
+
+    remaining_workspaces = _list_user_workspaces(user_id)
+    if not remaining_workspaces:
+        fallback_workspace_id = _personal_workspace_id_for_user(user_id)
+        fallback_limits = _plan_limits(profile.get("plan_type", "free"))
+        _create_workspace(
+            workspace_id=fallback_workspace_id,
+            name="Meu Painel",
+            owner_user_id=user_id,
+            member_limit=fallback_limits["max_members_per_workspace"],
+        )
+        _add_workspace_member(fallback_workspace_id, user_id, "owner")
+        next_active = fallback_workspace_id
+    else:
+        next_active = remaining_workspaces[0]["id"]
+
+    _upsert_user_profile(
+        user_id=user_id,
+        email=profile.get("email"),
+        plan_type=profile.get("plan_type", "free"),
+        is_admin=bool(profile.get("is_admin", False)),
+        active_workspace_id=next_active,
+    )
+    return {"status": "deleted", "active_workspace_id": next_active}
+
+
+@app.post("/workspaces/{workspace_id}/activate")
+def activate_workspace(workspace_id: str, tenant: TenantContext = Depends(get_tenant_context)):
+    user_id = _require_authenticated_user(tenant)
+    profile = ensure_user_profile(user_id=user_id, email=tenant.user_email)
+    memberships = _list_user_workspaces(user_id)
+    if workspace_id not in {ws["id"] for ws in memberships}:
+        raise HTTPException(status_code=403, detail="User does not have access to this workspace")
+
+    updated = _upsert_user_profile(
+        user_id=user_id,
+        email=profile.get("email"),
+        plan_type=profile.get("plan_type", "free"),
+        active_workspace_id=workspace_id,
+    )
+    return {"status": "activated", "active_workspace_id": updated.get("active_workspace_id")}
+
+@app.get("/workspaces/{workspace_id}/members")
+def list_workspace_members(workspace_id: str, tenant: TenantContext = Depends(get_tenant_context)):
+    user_id = _require_authenticated_user(tenant)
+    membership = _get_workspace_member(workspace_id, user_id)
+    if not membership:
+        raise HTTPException(status_code=403, detail="User does not have access to this workspace")
+
+    return {"workspace_id": workspace_id, "members": _list_workspace_members(workspace_id)}
+
+
+@app.delete("/workspaces/{workspace_id}/members/{member_user_id}")
+def remove_workspace_member(
+    workspace_id: str,
+    member_user_id: str,
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    user_id = _require_authenticated_user(tenant)
+    owner_membership = _get_workspace_member(workspace_id, user_id)
+    if not owner_membership:
+        raise HTTPException(status_code=403, detail="User does not have access to this workspace")
+    if owner_membership.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Only workspace owner can remove members")
+    if member_user_id == user_id:
+        raise HTTPException(status_code=400, detail="Owner cannot remove themselves from workspace")
+
+    target_membership = _get_workspace_member(workspace_id, member_user_id)
+    if not target_membership:
+        raise HTTPException(status_code=404, detail="Member not found")
+    if target_membership.get("role") == "owner":
+        raise HTTPException(status_code=400, detail="Cannot remove workspace owner")
+
+    _delete_workspace_member(workspace_id, member_user_id)
+
+    target_profile = _get_user_profile(member_user_id)
+    if target_profile and target_profile.get("active_workspace_id") == workspace_id:
+        remaining = _list_user_workspaces(member_user_id)
+        next_active = remaining[0]["id"] if remaining else None
+        _upsert_user_profile(
+            user_id=member_user_id,
+            email=target_profile.get("email"),
+            plan_type=target_profile.get("plan_type", "free"),
+            is_admin=bool(target_profile.get("is_admin", False)),
+            active_workspace_id=next_active,
+        )
+
+    return {"status": "removed"}
+
+@app.post("/workspaces/{workspace_id}/invites")
+def create_workspace_invite(
+    workspace_id: str,
+    payload: WorkspaceInviteCreate,
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    user_id = _require_authenticated_user(tenant)
+    profile = ensure_user_profile(user_id=user_id, email=tenant.user_email)
+    workspace = _get_workspace(workspace_id)
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    membership = _get_workspace_member(workspace_id, user_id)
+    if not membership:
+        raise HTTPException(status_code=403, detail="User does not have access to this workspace")
+
+    if membership.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Only workspace owner can invite users")
+
+    invitee_email = payload.invitee_email.strip().lower()
+    if not invitee_email or "@" not in invitee_email:
+        raise HTTPException(status_code=400, detail="Invalid invitee email")
+
+    if profile.get("email") and invitee_email == profile.get("email").strip().lower():
+        raise HTTPException(status_code=400, detail="Cannot invite yourself")
+
+    invite_mode = payload.invite_mode
+    if invite_mode != "shared":
+        raise HTTPException(
+            status_code=400,
+            detail="Isolated invites are currently disabled. Use shared workspace invites.",
+        )
+
+    limits = _plan_limits(profile.get("plan_type", "free"))
+    member_count = _count_workspace_members(workspace_id)
+    if member_count >= limits["max_members_per_workspace"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Plan {profile.get('plan_type')} supports up to {limits['max_members_per_workspace']} members per workspace.",
+        )
+    invite = _create_workspace_invite(
+        workspace_id=workspace_id,
+        inviter_user_id=user_id,
+        invitee_email=invitee_email,
+        invite_mode=invite_mode,
+    )
+
+    return {"status": "created", "invite": invite}
+
+@app.get("/invites")
+def list_invites(tenant: TenantContext = Depends(get_tenant_context)):
+    user_id = _require_authenticated_user(tenant)
+    profile = ensure_user_profile(user_id=user_id, email=tenant.user_email)
+    my_email = (profile.get("email") or "").strip().lower()
+
+    if not my_email:
+        return {"received": [], "sent": _list_sent_invites(user_id)}
+
+    return {
+        "received": _list_pending_invites_for_email(my_email),
+        "sent": _list_sent_invites(user_id),
+    }
+
+@app.post("/invites/{invite_id}/accept")
+def accept_invite(invite_id: str, tenant: TenantContext = Depends(get_tenant_context)):
+    user_id = _require_authenticated_user(tenant)
+    profile = ensure_user_profile(user_id=user_id, email=tenant.user_email)
+    invite = _get_workspace_invite(invite_id)
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    if invite.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Invite is not pending")
+
+    invitee_email = (invite.get("invitee_email") or "").strip().lower()
+    current_email = (profile.get("email") or "").strip().lower()
+    if not current_email or invitee_email != current_email:
+        raise HTTPException(status_code=403, detail="Invite does not belong to this user")
+
+    invite_mode = invite.get("invite_mode")
+    accepted_workspace_id = None
+
+    if invite_mode == "shared":
+        workspace_id = invite.get("workspace_id")
+        if not workspace_id:
+            raise HTTPException(status_code=400, detail="Invalid shared invite")
+
+        workspace = _get_workspace(workspace_id)
+        if not workspace:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+
+        owner_profile = ensure_user_profile(workspace.get("owner_user_id"), None)
+        owner_limits = _plan_limits(owner_profile.get("plan_type", "free"))
+        member_count = _count_workspace_members(workspace_id)
+        existing_member = _get_workspace_member(workspace_id, user_id)
+        if not existing_member and member_count >= owner_limits["max_members_per_workspace"]:
+            raise HTTPException(status_code=400, detail="Workspace member limit reached")
+
+        _add_workspace_member(workspace_id, user_id, "member")
+        accepted_workspace_id = workspace_id
+    else:
+        my_workspaces = _list_user_workspaces(user_id)
+        my_plan_limits = _plan_limits(profile.get("plan_type", "free"))
+        if len(my_workspaces) >= my_plan_limits["max_workspaces"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Your plan allows only {my_plan_limits['max_workspaces']} workspace(s).",
+            )
+
+        workspace_name = (invite.get("target_workspace_name") or "Meu Painel").strip() or "Meu Painel"
+        new_workspace_id = f"ws-{uuid.uuid4().hex[:12]}"
+        _create_workspace(
+            workspace_id=new_workspace_id,
+            name=workspace_name,
+            owner_user_id=user_id,
+            member_limit=my_plan_limits["max_members_per_workspace"],
+        )
+        _add_workspace_member(new_workspace_id, user_id, "owner")
+        accepted_workspace_id = new_workspace_id
+
+    _update_workspace_invite(invite_id, status="accepted", accepted_at=_utc_now_iso())
+    _upsert_user_profile(
+        user_id=user_id,
+        email=profile.get("email"),
+        plan_type=profile.get("plan_type", "free"),
+        active_workspace_id=accepted_workspace_id,
+    )
+    return {"status": "accepted", "workspace_id": accepted_workspace_id}
+
+@app.post("/upload")
+async def upload_invoice(
+    file: UploadFile = File(...),
+    owner: str = Form(...),
+    month_ref: str = Form(...), # Format: YYYY-MM
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """
+    Receives a CSV file, processes it, and saves to database.
+    In local mode: saves to SQLite.
+    In cloud mode: saves to GCS and BigQuery.
+    """
+    _require_data_access(tenant)
+    try:
+        # 1. Validation
+        if not file.filename.endswith('.csv'):
+            raise HTTPException(status_code=400, detail="Only CSV files allowed")
+
+        contents = await file.read()
+        ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+        
+        # 2. Save file (local or cloud)
+        if USE_SQLITE:
+            # Local mode: save to data/uploads folder
+            from pathlib import Path
+            upload_dir = Path(__file__).parent.parent / "data" / "uploads"
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            
+            year, month = month_ref.split('-')
+            local_path = upload_dir / f"{tenant.tenant_id}_{owner}_{year}{month}_{ts}_{file.filename}"
+            
+            with open(local_path, 'wb') as f:
+                f.write(contents)
+            
+            file_path = str(local_path)
+            print(f"File saved locally: {file_path}")
+        else:
+            # Cloud mode: Upload to GCS Bronze
+            storage_client = storage.Client(project=PROJECT_ID)
+            bucket = storage_client.bucket(BUCKET_RAW)
+            
+            year, month = month_ref.split('-')
+            blob_name = f"bronze/{tenant.tenant_id}/{owner}/{year}/{month}/{ts}_{file.filename}"
+            
+            blob = bucket.blob(blob_name)
+            blob.upload_from_string(contents, content_type="text/csv")
+            
+            file_path = f"gs://{BUCKET_RAW}/{blob_name}"
+            print(f"File uploaded to {file_path}")
+
+        # 3. Process file and insert into database
+        processor = TransactionProcessor()
+        count = processor.process_file(contents, file.filename, owner, month_ref, tenant.tenant_id)
+        
+        return {
+            "status": "success", 
+            "file_path": file_path,
+            "processed_rows": count
+        }
+
+    except Exception as e:
+        print(f"Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/net-worth/upload")
+async def upload_net_worth(
+    file: UploadFile = File(...),
+    owner: str = Form("Victor"),
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """
+    Upload a monthly summary CSV (e.g. Controle Financeiro - Mensal.csv) and store it as
+    net worth/cashflow snapshots by month.
+    This is currently treated as a manual input source (one snapshot per month).
+    """
+    _require_data_access(tenant)
+
+    owner_name = _normalize_owner(owner)
+
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only CSV files allowed")
+
+    try:
+        import io
+        import pandas as pd
+
+        contents = await file.read()
+        df = pd.read_csv(io.BytesIO(contents))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Could not read CSV file") from exc
+
+    required_cols = {"Data", "Guardado"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing required columns: {', '.join(sorted(missing))}",
+        )
+
+    now_iso = datetime.datetime.utcnow().isoformat()
+    snapshots: list[dict] = []
+
+    for _, row in df.iterrows():
+        month_ref = _parse_month_ref(row.get("Data"))
+        if not month_ref:
+            continue
+
+        net_worth_total = _parse_br_money(row.get("Guardado"))
+        if net_worth_total is None:
+            continue
+
+        raw_notes = row.get("Obs")
+        notes = None
+        if raw_notes is not None:
+            notes_str = str(raw_notes).strip()
+            if notes_str and notes_str.lower() != "nan":
+                notes = notes_str
+
+        snapshots.append(
+            {
+                "tenant_id": tenant.tenant_id,
+                "owner": owner_name,
+                "month_ref": month_ref,
+                "salary": _parse_br_money(row.get("Salário")),
+                "other_income": _parse_br_money(row.get("Outros")),
+                "income_total": _parse_br_money(row.get("Entrada")),
+                "expense_fixed": _parse_br_money(row.get("CustoFixo")),
+                "expense_variable": _parse_br_money(row.get("CustoMês")),
+                "expense_total": _parse_br_money(row.get("Saída")),
+                "cash_end_balance": _parse_br_money(row.get("Final")),
+                "net_worth_total": net_worth_total,
+                "debt_ratio": _parse_br_percent(row.get("Endividamento")),
+                "notes": notes,
+                "updated_at": now_iso,
+                "source_file": file.filename,
+            }
+        )
+
+    if not snapshots:
+        return {"status": "success", "imported_months": 0, "message": "No valid rows found."}
+
+    snapshots.sort(key=lambda x: x["month_ref"])
+
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        for s in snapshots:
+            c.execute(
+                """
+                INSERT INTO net_worth_monthly (
+                    tenant_id,
+                    owner,
+                    month_ref,
+                    salary,
+                    other_income,
+                    income_total,
+                    expense_fixed,
+                    expense_variable,
+                    expense_total,
+                    cash_end_balance,
+                    net_worth_total,
+                    debt_ratio,
+                    notes,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(tenant_id, owner, month_ref) DO UPDATE SET
+                    salary=excluded.salary,
+                    other_income=excluded.other_income,
+                    income_total=excluded.income_total,
+                    expense_fixed=excluded.expense_fixed,
+                    expense_variable=excluded.expense_variable,
+                    expense_total=excluded.expense_total,
+                    cash_end_balance=excluded.cash_end_balance,
+                    net_worth_total=excluded.net_worth_total,
+                    debt_ratio=excluded.debt_ratio,
+                    notes=excluded.notes,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    s["tenant_id"],
+                    s["owner"],
+                    s["month_ref"],
+                    s.get("salary"),
+                    s.get("other_income"),
+                    s.get("income_total"),
+                    s.get("expense_fixed"),
+                    s.get("expense_variable"),
+                    s.get("expense_total"),
+                    s.get("cash_end_balance"),
+                    s.get("net_worth_total"),
+                    s.get("debt_ratio"),
+                    s.get("notes"),
+                    s.get("updated_at"),
+                ),
+            )
+        conn.commit()
+        conn.close()
+    else:
+        if USE_MOCK or db_firestore is None:
+            return {"status": "success", "imported_months": 0, "message": "Firestore not available (mock mode)."}
+
+        try:
+            batch = db_firestore.batch()
+            op_count = 0
+            for s in snapshots:
+                doc_id = f"{tenant.tenant_id}_{s['owner']}_{s['month_ref']}"
+                ref = db_firestore.collection(NET_WORTH_COLLECTION).document(doc_id)
+                batch.set(ref, s, merge=True)
+                op_count += 1
+                if op_count % 400 == 0:
+                    batch.commit()
+                    batch = db_firestore.batch()
+            batch.commit()
+        except Exception as exc:
+            print(f"Error writing net worth snapshots to Firestore: {exc}")
+            raise HTTPException(status_code=500, detail="Failed to store snapshots") from exc
+
+    return {
+        "status": "success",
+        "imported_months": len(snapshots),
+        "first_month": snapshots[0]["month_ref"],
+        "last_month": snapshots[-1]["month_ref"],
+    }
+
+@app.get("/net-worth")
+def get_net_worth(
+    start: str = None,
+    end: str = None,
+    owner: str = None,
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """
+    Returns monthly net worth snapshots for the active tenant/workspace.
+    Params start/end are optional (YYYY-MM).
+    """
+    _require_data_access(tenant)
+    start_month = start
+    end_month = end
+    owner_name = _normalize_owner(owner) if owner else None
+
+    if USE_SQLITE:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        query = "SELECT * FROM net_worth_monthly WHERE tenant_id = ?"
+        params: list[object] = [tenant.tenant_id]
+        if owner_name:
+            query += " AND owner = ?"
+            params.append(owner_name)
+        if start_month:
+            query += " AND month_ref >= ?"
+            params.append(start_month)
+        if end_month:
+            query += " AND month_ref <= ?"
+            params.append(end_month)
+        query += " ORDER BY month_ref ASC"
+        c.execute(query, params)
+        results = [dict(row) for row in c.fetchall()]
+        conn.close()
+        return {"data": results}
+
+    if USE_MOCK or db_firestore is None:
+        return {"data": []}
+
+    try:
+        docs = (
+            db_firestore.collection(NET_WORTH_COLLECTION)
+            .where("tenant_id", "==", tenant.tenant_id)
+            .stream()
+        )
+        results: list[dict] = []
+        for doc in docs:
+            data = doc.to_dict() or {}
+            month_ref = (data.get("month_ref") or "").strip()
+            if not month_ref:
+                continue
+            row_owner = data.get("owner")
+            if owner_name:
+                if not row_owner:
+                    # Legacy rows (before owner field) are treated as Victor.
+                    if owner_name != "Victor":
+                        continue
+                    data["owner"] = "Victor"
+                elif row_owner != owner_name:
+                    continue
+            elif not row_owner:
+                data["owner"] = "Victor"
+            if start_month and month_ref < start_month:
+                continue
+            if end_month and month_ref > end_month:
+                continue
+            results.append(data)
+
+        results.sort(key=lambda x: x.get("month_ref") or "")
+        return {"data": results}
+    except Exception as exc:
+        print(f"Error fetching net worth snapshots from Firestore: {exc}")
+        return {"data": []}
+
+@app.put("/net-worth/{month_ref}")
+def update_net_worth_row(
+    month_ref: str,
+    payload: NetWorthRowUpdate,
+    owner: str = "Victor",
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """
+    Manual editor for one month row in patrimônio.
+    """
+    _require_data_access(tenant)
+    if not re.fullmatch(r"\d{4}-\d{2}", month_ref):
+        raise HTTPException(status_code=400, detail="month_ref must be in YYYY-MM format")
+
+    owner_name = _normalize_owner(owner)
+    now_iso = datetime.datetime.utcnow().isoformat()
+    fields = {
+        "salary": payload.salary,
+        "other_income": payload.other_income,
+        "income_total": payload.income_total,
+        "expense_fixed": payload.expense_fixed,
+        "expense_variable": payload.expense_variable,
+        "expense_total": payload.expense_total,
+        "cash_end_balance": payload.cash_end_balance,
+        "net_worth_total": payload.net_worth_total,
+        "debt_ratio": payload.debt_ratio,
+        "notes": payload.notes,
+    }
+    changed_fields = {k: v for k, v in fields.items() if v is not None}
+    if not changed_fields:
+        return {"status": "no_changes"}
+
+    if USE_SQLITE:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT * FROM net_worth_monthly
+            WHERE tenant_id = ? AND owner = ? AND month_ref = ?
+            """,
+            (tenant.tenant_id, owner_name, month_ref),
+        )
+        existing = c.fetchone()
+        merged = dict(existing) if existing else {
+            "tenant_id": tenant.tenant_id,
+            "owner": owner_name,
+            "month_ref": month_ref,
+        }
+        merged.update(changed_fields)
+        merged["updated_at"] = now_iso
+
+        c.execute(
+            """
+            INSERT INTO net_worth_monthly (
+                tenant_id,
+                owner,
+                month_ref,
+                salary,
+                other_income,
+                income_total,
+                expense_fixed,
+                expense_variable,
+                expense_total,
+                cash_end_balance,
+                net_worth_total,
+                debt_ratio,
+                notes,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(tenant_id, owner, month_ref) DO UPDATE SET
+                salary=excluded.salary,
+                other_income=excluded.other_income,
+                income_total=excluded.income_total,
+                expense_fixed=excluded.expense_fixed,
+                expense_variable=excluded.expense_variable,
+                expense_total=excluded.expense_total,
+                cash_end_balance=excluded.cash_end_balance,
+                net_worth_total=excluded.net_worth_total,
+                debt_ratio=excluded.debt_ratio,
+                notes=excluded.notes,
+                updated_at=excluded.updated_at
+            """,
+            (
+                tenant.tenant_id,
+                owner_name,
+                month_ref,
+                merged.get("salary"),
+                merged.get("other_income"),
+                merged.get("income_total"),
+                merged.get("expense_fixed"),
+                merged.get("expense_variable"),
+                merged.get("expense_total"),
+                merged.get("cash_end_balance"),
+                merged.get("net_worth_total"),
+                merged.get("debt_ratio"),
+                merged.get("notes"),
+                now_iso,
+            ),
+        )
+        conn.commit()
+        conn.close()
+        return {"status": "updated", "month_ref": month_ref, "owner": owner_name}
+
+    if USE_MOCK or db_firestore is None:
+        return {"status": "updated (mock)", "month_ref": month_ref, "owner": owner_name}
+
+    doc_id = f"{tenant.tenant_id}_{owner_name}_{month_ref}"
+    document = {
+        "tenant_id": tenant.tenant_id,
+        "owner": owner_name,
+        "month_ref": month_ref,
+        "updated_at": now_iso,
+    }
+    document.update(changed_fields)
+    db_firestore.collection(NET_WORTH_COLLECTION).document(doc_id).set(document, merge=True)
+    return {"status": "updated", "month_ref": month_ref, "owner": owner_name}
+
+@app.get("/net-worth/validation")
+def get_net_worth_validation(
+    start: str = None,
+    end: str = None,
+    owner: str = "Victor",
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """
+    Returns monthly validation data:
+    - income from current-account credits
+    - expenses from card transactions + current-account debits (excluding card bill payment)
+    - manual patrimônio row values (when available)
+    """
+    _require_data_access(tenant)
+    owner_name = _normalize_owner(owner)
+
+    def month_allowed(month_ref: str) -> bool:
+        if not month_ref:
+            return False
+        if start and month_ref < start:
+            return False
+        if end and month_ref > end:
+            return False
+        return True
+
+    aggregates: dict[str, dict] = {}
+
+    def ensure_row(month_ref: str) -> dict:
+        if month_ref not in aggregates:
+            aggregates[month_ref] = {
+                "month_ref": month_ref,
+                "owner": owner_name,
+                "income_bank": 0.0,
+                "expense_bank": 0.0,
+                "expense_card": 0.0,
+                "manual_income_total": None,
+                "manual_expense_total": None,
+                "manual_net_worth_total": None,
+            }
+        return aggregates[month_ref]
+
+    if USE_SQLITE:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+
+        c.execute(
+            """
+            SELECT month_ref,
+                   SUM(CASE WHEN amount_signed > 0 THEN amount_signed ELSE 0 END) AS income_bank,
+                   SUM(CASE WHEN amount_signed < 0 AND is_card_invoice_payment = 0 THEN -amount_signed ELSE 0 END) AS expense_bank
+            FROM current_account_movements
+            WHERE tenant_id = ? AND owner = ?
+            GROUP BY month_ref
+            """,
+            (tenant.tenant_id, owner_name),
+        )
+        for row in c.fetchall():
+            month_ref = row["month_ref"]
+            if not month_allowed(month_ref):
+                continue
+            target = ensure_row(month_ref)
+            target["income_bank"] = float(row["income_bank"] or 0)
+            target["expense_bank"] = float(row["expense_bank"] or 0)
+
+        c.execute(
+            """
+            SELECT month_ref, SUM(amount) AS expense_card
+            FROM transactions_gold
+            WHERE tenant_id = ? AND owner = ? AND id NOT LIKE 'cc-%'
+            GROUP BY month_ref
+            """,
+            (tenant.tenant_id, owner_name),
+        )
+        for row in c.fetchall():
+            month_ref = row["month_ref"]
+            if not month_allowed(month_ref):
+                continue
+            target = ensure_row(month_ref)
+            target["expense_card"] = float(row["expense_card"] or 0)
+
+        c.execute(
+            """
+            SELECT month_ref, income_total, expense_total, net_worth_total
+            FROM net_worth_monthly
+            WHERE tenant_id = ? AND owner = ?
+            """,
+            (tenant.tenant_id, owner_name),
+        )
+        for row in c.fetchall():
+            month_ref = row["month_ref"]
+            if not month_allowed(month_ref):
+                continue
+            target = ensure_row(month_ref)
+            target["manual_income_total"] = row["income_total"]
+            target["manual_expense_total"] = row["expense_total"]
+            target["manual_net_worth_total"] = row["net_worth_total"]
+
+        conn.close()
+    elif not USE_MOCK and db_firestore is not None:
+        movement_docs = (
+            db_firestore.collection(CURRENT_ACCOUNT_COLLECTION)
+            .where("tenant_id", "==", tenant.tenant_id)
+            .where("owner", "==", owner_name)
+            .stream()
+        )
+        for doc in movement_docs:
+            data = doc.to_dict() or {}
+            month_ref = data.get("month_ref")
+            if not month_allowed(month_ref):
+                continue
+            amount_signed = float(data.get("amount_signed") or 0)
+            target = ensure_row(month_ref)
+            if amount_signed > 0:
+                target["income_bank"] += amount_signed
+            elif amount_signed < 0 and not bool(data.get("is_card_invoice_payment", False)):
+                target["expense_bank"] += abs(amount_signed)
+
+        tx_docs = (
+            db_firestore.collection(FIRESTORE_COLLECTION)
+            .where("tenant_id", "==", tenant.tenant_id)
+            .where("owner", "==", owner_name)
+            .stream()
+        )
+        for doc in tx_docs:
+            tx = doc.to_dict() or {}
+            month_ref = tx.get("month_ref")
+            if not month_allowed(month_ref):
+                continue
+            if doc.id.startswith("cc-"):
+                continue
+            target = ensure_row(month_ref)
+            target["expense_card"] += float(tx.get("amount") or 0)
+
+        manual_docs = (
+            db_firestore.collection(NET_WORTH_COLLECTION)
+            .where("tenant_id", "==", tenant.tenant_id)
+            .where("owner", "==", owner_name)
+            .stream()
+        )
+        for doc in manual_docs:
+            row = doc.to_dict() or {}
+            month_ref = row.get("month_ref")
+            if not month_allowed(month_ref):
+                continue
+            target = ensure_row(month_ref)
+            target["manual_income_total"] = row.get("income_total")
+            target["manual_expense_total"] = row.get("expense_total")
+            target["manual_net_worth_total"] = row.get("net_worth_total")
+
+    rows = []
+    for month_ref in sorted(aggregates.keys()):
+        row = aggregates[month_ref]
+        suggested_income = round(float(row["income_bank"] or 0), 2)
+        suggested_expense = round(float(row["expense_bank"] or 0) + float(row["expense_card"] or 0), 2)
+        row["suggested_income_total"] = suggested_income
+        row["suggested_expense_total"] = suggested_expense
+        row["suggested_saved"] = round(suggested_income - suggested_expense, 2)
+        row["is_partial"] = row["manual_income_total"] is None or row["manual_expense_total"] is None
+        rows.append(row)
+
+    return {"owner": owner_name, "data": rows}
+
+@app.post("/current-account/upload")
+async def upload_current_account(
+    file: UploadFile = File(...),
+    owner: str = Form(...),
+    month_ref: str = Form(...),
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """
+    Upload current-account CSV and:
+    1) store signed movements
+    2) generate spending transactions from outgoing movements (excluding card bill payment)
+    """
+    _require_data_access(tenant)
+    owner_name = _normalize_owner(owner)
+    if not re.fullmatch(r"\d{4}-\d{2}", month_ref):
+        raise HTTPException(status_code=400, detail="month_ref must be in YYYY-MM format")
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only CSV files allowed")
+
+    try:
+        import io
+        import pandas as pd
+        contents = await file.read()
+        df = pd.read_csv(io.BytesIO(contents))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Could not read CSV file") from exc
+
+    required = {"Data", "Valor", "Descrição"}
+    missing = required - set(df.columns)
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing required columns: {', '.join(sorted(missing))}")
+
+    source_file = file.filename
+    now_iso = datetime.datetime.utcnow().isoformat()
+    movement_rows: list[dict] = []
+    transaction_rows: list[dict] = []
+    skipped_other_month = 0
+
+    for _, row in df.iterrows():
+        date_iso = _parse_ddmmyyyy_to_iso(row.get("Data"))
+        if not date_iso:
+            continue
+        parsed_month = date_iso[:7]
+        if parsed_month != month_ref:
+            skipped_other_month += 1
+            continue
+
+        amount_signed = _parse_signed_amount(row.get("Valor"))
+        if amount_signed is None or amount_signed == 0:
+            continue
+
+        description = str(row.get("Descrição") or "").strip()
+        if not description:
+            continue
+
+        identifier_raw = str(row.get("Identificador") or "").strip()
+        if not identifier_raw:
+            digest = hashlib.md5(f"{tenant.tenant_id}|{owner_name}|{date_iso}|{amount_signed}|{description}".encode("utf-8")).hexdigest()[:20]
+            identifier_raw = f"auto-{digest}"
+        movement_id = re.sub(r"[^A-Za-z0-9_.-]", "-", identifier_raw)[:120]
+
+        is_card_invoice_payment = "pagamento de fatura" in description.lower()
+        movement = {
+            "tenant_id": tenant.tenant_id,
+            "owner": owner_name,
+            "movement_id": movement_id,
+            "date": date_iso,
+            "month_ref": parsed_month,
+            "amount_signed": float(amount_signed),
+            "description": description,
+            "source_file": source_file,
+            "is_card_invoice_payment": bool(is_card_invoice_payment),
+            "created_at": now_iso,
+        }
+        movement_rows.append(movement)
+
+        if amount_signed < 0 and not is_card_invoice_payment:
+            tx_id = f"cc-{tenant.tenant_id}-{owner_name.lower()}-{movement_id}"
+            transaction_rows.append(
+                {
+                    "id": tx_id,
+                    "tenant_id": tenant.tenant_id,
+                    "date": date_iso,
+                    "month_ref": parsed_month,
+                    "amount": round(abs(float(amount_signed)), 2),
+                    "merchant_clean": description[:255],
+                    "category": _category_for_current_account(description, is_card_invoice_payment=False),
+                    "subcategory": "Conta Corrente",
+                    "owner": owner_name,
+                    "type": "Individual",
+                    "created_at": now_iso,
+                }
+            )
+
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        for movement in movement_rows:
+            c.execute(
+                """
+                INSERT OR REPLACE INTO current_account_movements (
+                    tenant_id,
+                    owner,
+                    movement_id,
+                    date,
+                    month_ref,
+                    amount_signed,
+                    description,
+                    source_file,
+                    is_card_invoice_payment,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    movement["tenant_id"],
+                    movement["owner"],
+                    movement["movement_id"],
+                    movement["date"],
+                    movement["month_ref"],
+                    movement["amount_signed"],
+                    movement["description"],
+                    movement["source_file"],
+                    1 if movement["is_card_invoice_payment"] else 0,
+                    movement["created_at"],
+                ),
+            )
+
+        for tx in transaction_rows:
+            c.execute(
+                """
+                INSERT OR REPLACE INTO transactions_gold
+                (id, tenant_id, date, month_ref, amount, merchant_clean, category, subcategory, owner, type, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tx["id"],
+                    tx["tenant_id"],
+                    tx["date"],
+                    tx["month_ref"],
+                    tx["amount"],
+                    tx["merchant_clean"],
+                    tx["category"],
+                    tx["subcategory"],
+                    tx["owner"],
+                    tx["type"],
+                    tx["created_at"],
+                ),
+            )
+        conn.commit()
+        conn.close()
+    elif not USE_MOCK and db_firestore is not None:
+        batch = db_firestore.batch()
+        op_count = 0
+        for movement in movement_rows:
+            doc_id = f"{tenant.tenant_id}_{owner_name}_{movement['movement_id']}"
+            ref = db_firestore.collection(CURRENT_ACCOUNT_COLLECTION).document(doc_id)
+            batch.set(ref, movement, merge=True)
+            op_count += 1
+            if op_count % 400 == 0:
+                batch.commit()
+                batch = db_firestore.batch()
+        for tx in transaction_rows:
+            tx_ref = db_firestore.collection(FIRESTORE_COLLECTION).document(tx["id"])
+            batch.set(tx_ref, tx, merge=True)
+            op_count += 1
+            if op_count % 400 == 0:
+                batch.commit()
+                batch = db_firestore.batch()
+        batch.commit()
+
+    return {
+        "status": "success",
+        "owner": owner_name,
+        "month_ref": month_ref,
+        "processed_movements": len(movement_rows),
+        "generated_transactions": len(transaction_rows),
+        "skipped_other_month": skipped_other_month,
+    }
+
+@app.get("/transactions")
+def get_transactions(
+    start: str,
+    end: str = None,
+    owner: str = None,
+    tx_type: str = None,
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """
+    Get transactions for a date range (YYYY-MM to YYYY-MM).
+    Optional filters: owner (Victor/Larissa), tx_type (Individual/Shared)
+    """
+    _require_data_access(tenant)
+    end_month = end or start
+    
+    # SQLITE MODE
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        # Build dynamic query with filters
+        query = "SELECT * FROM transactions_gold WHERE tenant_id = ? AND month_ref >= ? AND month_ref <= ?"
+        params = [tenant.tenant_id, start, end_month]
+        
+        if owner:
+            query += " AND owner = ?"
+            params.append(owner)
+        if tx_type:
+            query += " AND type = ?"
+            params.append(tx_type)
+        
+        query += " ORDER BY date DESC"
+        c.execute(query, params)
+        results = [dict(row) for row in c.fetchall()]
+        conn.close()
+        return results
+
+    # MOCK MODE
+    if USE_MOCK or db_firestore is None:
+        print(f"Using mock data for transactions (range={start} to {end_month})")
+        data = load_mock_data()
+        filtered = [
+            tx for tx in data
+            if tx.get("tenant_id") == tenant.tenant_id and start <= tx.get('month_ref', '') <= end_month
+        ]
+        
+        if owner:
+            filtered = [tx for tx in filtered if tx.get('owner') == owner]
+        if tx_type:
+            filtered = [tx for tx in filtered if tx.get('type') == tx_type]
+        
+        filtered.sort(key=lambda x: x.get('date', ''), reverse=True)
+        return filtered
+    
+    # FIRESTORE MODE (Cloud)
+    try:
+        # Use simpler query on month_ref only, then filter in Python
+        # This avoids complex composite index requirements for each filter combination
+        query = db_firestore.collection(FIRESTORE_COLLECTION)
+        query = query.where("month_ref", ">=", start).where("month_ref", "<=", end_month)
+        
+        docs = query.stream()
+        results = []
+        for doc in docs:
+            data = doc.to_dict() or {}
+            data['id'] = doc.id
+
+            doc_tenant = data.get("tenant_id") or DEFAULT_TENANT_ID
+            if doc_tenant != tenant.tenant_id:
+                continue
+            data["tenant_id"] = doc_tenant
+            
+            # Client-side filtering for owner and type
+            if owner and data.get('owner') != owner:
+                continue
+            if tx_type and data.get('type') != tx_type:
+                continue
+                
+            results.append(data)
+        
+        # Sort by date descending
+        results.sort(key=lambda x: x.get('date', ''), reverse=True)
+        
+        return results
+    except Exception as e:
+        print(f"Error fetching transactions from Firestore: {e}")
+        return []
+
+@app.put("/transactions/{transaction_id}")
+def update_transaction(
+    transaction_id: str,
+    update_data: TransactionUpdate,
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """
+    Update any field of a transaction.
+    """
+    _require_data_access(tenant)
+    # SQLITE MODE
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        set_clauses = []
+        params = []
+        
+        if update_data.date is not None:
+            set_clauses.append("date = ?")
+            params.append(update_data.date)
+            # Also update month_ref
+            set_clauses.append("month_ref = ?")
+            params.append(update_data.date[:7] if update_data.date else None)
+        if update_data.amount is not None:
+            set_clauses.append("amount = ?")
+            params.append(update_data.amount)
+        if update_data.merchant_clean is not None:
+            set_clauses.append("merchant_clean = ?")
+            params.append(update_data.merchant_clean)
+        if update_data.category is not None:
+            set_clauses.append("category = ?")
+            params.append(update_data.category)
+        if update_data.subcategory is not None:
+            set_clauses.append("subcategory = ?")
+            params.append(update_data.subcategory)
+        if update_data.owner is not None:
+            set_clauses.append("owner = ?")
+            params.append(update_data.owner)
+        if update_data.type is not None:
+            set_clauses.append("type = ?")
+            params.append(update_data.type)
+            
+        if not set_clauses:
+            return {"status": "no changes"}
+            
+        params.extend([transaction_id, tenant.tenant_id])
+        c.execute(
+            f"UPDATE transactions_gold SET {', '.join(set_clauses)} WHERE id = ? AND tenant_id = ?",
+            params,
+        )
+        affected = c.rowcount
+        conn.commit()
+        conn.close()
+        if affected == 0:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        return {"status": "updated", "id": transaction_id}
+
+    # MOCK MODE - just return success (no persistence)
+    if USE_MOCK or db_firestore is None:
+        return {"status": "updated (mock)", "id": transaction_id}
+    
+    # FIRESTORE MODE
+    try:
+        update_dict = {}
+        if update_data.date is not None:
+            update_dict['date'] = update_data.date
+            update_dict['month_ref'] = update_data.date[:7]
+        if update_data.amount is not None:
+            update_dict['amount'] = update_data.amount
+        if update_data.merchant_clean is not None:
+            update_dict['merchant_clean'] = update_data.merchant_clean
+        if update_data.category is not None:
+            update_dict['category'] = update_data.category
+        if update_data.subcategory is not None:
+            update_dict['subcategory'] = update_data.subcategory
+        if update_data.owner is not None:
+            update_dict['owner'] = update_data.owner
+        if update_data.type is not None:
+            update_dict['type'] = update_data.type
+        
+        if not update_dict:
+            return {"status": "no changes"}
+        
+        doc_ref = db_firestore.collection(FIRESTORE_COLLECTION).document(transaction_id)
+        doc = doc_ref.get()
+        if not doc.exists:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+
+        current_data = doc.to_dict() or {}
+        if (current_data.get("tenant_id") or DEFAULT_TENANT_ID) != tenant.tenant_id:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+
+        update_dict['updated_at'] = datetime.datetime.now().isoformat()
+        doc_ref.update(update_dict)
+        return {"status": "updated", "id": transaction_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating transaction in Firestore: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/transactions")
+def create_transaction(tx: TransactionCreate, tenant: TenantContext = Depends(get_tenant_context)):
+    """
+    Create a new transaction.
+    """
+    _require_data_access(tenant)
+    import uuid
+    import datetime as dt
+    
+    tx_id = f"{tenant.tenant_id}-{str(uuid.uuid4())[:8]}-{tx.date.replace('-', '')}"
+    month_ref = tx.date[:7] if tx.date else None
+    
+    # SQLITE MODE
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        c.execute('''
+            INSERT INTO transactions_gold 
+            (id, tenant_id, date, month_ref, amount, merchant_clean, category, subcategory, owner, type, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            tx_id,
+            tenant.tenant_id,
+            tx.date,
+            month_ref,
+            tx.amount,
+            tx.merchant_clean,
+            tx.category,
+            tx.subcategory,
+            tx.owner,
+            tx.type,
+            dt.datetime.now().isoformat()
+        ))
+        conn.commit()
+        conn.close()
+        return {"status": "created", "id": tx_id}
+
+    # MOCK MODE
+    if USE_MOCK or db_firestore is None:
+        return {"status": "created (mock)", "id": tx_id}
+    
+    # FIRESTORE MODE
+    try:
+        doc_data = {
+            "date": tx.date,
+            "month_ref": month_ref,
+            "amount": tx.amount,
+            "merchant_clean": tx.merchant_clean,
+            "category": tx.category,
+            "subcategory": tx.subcategory,
+            "owner": tx.owner,
+            "type": tx.type,
+            "tenant_id": tenant.tenant_id,
+            "created_at": dt.datetime.now().isoformat()
+        }
+        db_firestore.collection(FIRESTORE_COLLECTION).document(tx_id).set(doc_data)
+        return {"status": "created", "id": tx_id}
+    except Exception as e:
+        print(f"Error creating transaction in Firestore: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/transactions/{transaction_id}")
+def delete_transaction(transaction_id: str, tenant: TenantContext = Depends(get_tenant_context)):
+    """
+    Delete a transaction by ID.
+    """
+    _require_data_access(tenant)
+    # SQLITE MODE
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM transactions_gold WHERE id = ? AND tenant_id = ?",
+            (transaction_id, tenant.tenant_id),
+        )
+        affected = c.rowcount
+        conn.commit()
+        conn.close()
+        
+        if affected == 0:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        return {"status": "deleted", "id": transaction_id}
+
+    # MOCK MODE
+    if USE_MOCK or db_firestore is None:
+        return {"status": "deleted (mock)", "id": transaction_id}
+    
+    # FIRESTORE MODE
+    try:
+        doc_ref = db_firestore.collection(FIRESTORE_COLLECTION).document(transaction_id)
+        doc = doc_ref.get()
+        if not doc.exists:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        doc_data = doc.to_dict() or {}
+        if (doc_data.get("tenant_id") or DEFAULT_TENANT_ID) != tenant.tenant_id:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        doc_ref.delete()
+        return {"status": "deleted", "id": transaction_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting transaction from Firestore: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/dashboard-summary")
+def get_dashboard_summary(
+    start: str,
+    end: str = None,
+    owner: str = None,
+    tx_type: str = None,
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """
+    Returns aggregated stats for the dashboard over a date range.
+    Optional filters: owner (Victor/Larissa), tx_type (Individual/Shared)
+    """
+    _require_data_access(tenant)
+    end_month = end or start
+    
+    # SQLITE MODE
+    if USE_SQLITE:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        
+        # Helper to query totals
+        def get_total_spend_sqlite(s_date, e_date):
+            w = "tenant_id = ? AND month_ref >= ? AND month_ref <= ?"
+            p = [tenant.tenant_id, s_date, e_date]
+            if owner:
+                w += " AND owner = ?"
+                p.append(owner)
+            if tx_type:
+                w += " AND type = ?"
+                p.append(tx_type)
+            
+            c.execute(f"""
+                SELECT 
+                    SUM(amount) as total_spend,
+                    SUM(CASE WHEN owner = 'Victor' THEN amount ELSE 0 END) as victor_spend,
+                    SUM(CASE WHEN owner = 'Larissa' THEN amount ELSE 0 END) as larissa_spend
+                FROM transactions_gold
+                WHERE {w}
+            """, p)
+            r = c.fetchone()
+            return dict(r) if r and r['total_spend'] is not None else {'total_spend': 0, 'victor_spend': 0, 'larissa_spend': 0}
+
+        # 1. Current Period
+        current_totals = get_total_spend_sqlite(start, end_month)
+        
+        # 2. Last Year Period
+        def get_past_date_str(date_str):
+            y, m = map(int, date_str.split('-'))
+            return f"{y-1}-{m:02d}"
+            
+        start_ly = get_past_date_str(start)
+        end_ly = get_past_date_str(end_month)
+        last_year_totals = get_total_spend_sqlite(start_ly, end_ly)
+
+        # 3. Category Spend (Current Only)
+        base_where = "tenant_id = ? AND month_ref >= ? AND month_ref <= ?"
+        params = [tenant.tenant_id, start, end_month]
+        if owner:
+            base_where += " AND owner = ?"
+            params.append(owner)
+        if tx_type:
+            base_where += " AND type = ?"
+            params.append(tx_type)
+
+        c.execute(f"""
+            SELECT category, SUM(amount) as value
+            FROM transactions_gold
+            WHERE {base_where}
+            GROUP BY category
+            ORDER BY value DESC
+        """, params)
+        result_cat = [dict(r) for r in c.fetchall()]
+        
+        # 4. Settlement Logic (only for Shared transactions, Current Period)
+        settlement_where = "tenant_id = ? AND month_ref >= ? AND month_ref <= ?"
+        settlement_params = [tenant.tenant_id, start, end_month]
+        if owner:
+            settlement_where += " AND owner = ?"
+            settlement_params.append(owner)
+        
+        c.execute(f"""
+            SELECT 
+                owner,
+                SUM(amount) as shared_paid
+            FROM transactions_gold
+            WHERE {settlement_where} AND type = 'Shared'
+            GROUP BY owner
+        """, settlement_params)
+        settlement_rows = [dict(r) for r in c.fetchall()]
+        conn.close()
+        
+        # Calculate settlement
+        victor_paid = 0
+        larissa_paid = 0
+        for row in settlement_rows:
+            if row['owner'] == 'Victor': victor_paid = row['shared_paid'] or 0
+            if row['owner'] == 'Larissa': larissa_paid = row['shared_paid'] or 0
+            
+        total_shared = victor_paid + larissa_paid
+        half_share = total_shared / 2 if total_shared > 0 else 0
+        
+        if victor_paid > half_share:
+            direction = "Larissa deve a Victor"
+            amount = victor_paid - half_share
+        elif larissa_paid > half_share:
+            direction = "Victor deve a Larissa"
+            amount = larissa_paid - half_share
+        else:
+            direction = "Sem pendências"
+            amount = 0
+
+        return {
+            "total_spend": current_totals['total_spend'] or 0,
+            "total_spend_last_year": last_year_totals['total_spend'] or 0,
+            "spend_by_person": [
+                {
+                    "name": "Victor", 
+                    "value": current_totals['victor_spend'] or 0,
+                    "value_last_year": last_year_totals['victor_spend'] or 0
+                },
+                {
+                    "name": "Larissa", 
+                    "value": current_totals['larissa_spend'] or 0,
+                    "value_last_year": last_year_totals['larissa_spend'] or 0
+                }
+            ],
+            "spend_by_category": [{"name": r['category'] or "Outros", "value": r['value']} for r in result_cat],
+            "settlement": {
+                "direction": direction,
+                "amount": round(amount, 2)
+            }
+        }
+
+    # MOCK MODE
+    if USE_MOCK or bq_client is None:
+        print(f"Using mock data for dashboard (range={start} to {end_month})")
+        data = load_mock_data()
+        filtered = [
+            tx for tx in data
+            if tx.get("tenant_id") == tenant.tenant_id and start <= tx.get('month_ref', '') <= end_month
+        ]
+        if owner:
+            filtered = [tx for tx in filtered if tx.get('owner') == owner]
+        if tx_type:
+            filtered = [tx for tx in filtered if tx.get('type') == tx_type]
+        
+        if not filtered:
+            # Return empty dashboard
+            return {
+                "total_spend": 0,
+                "spend_by_person": [
+                    {"name": "Victor", "value": 0},
+                    {"name": "Larissa", "value": 0}
+                ],
+                "spend_by_category": [],
+                "settlement": {
+                    "direction": "Sem pendências",
+                    "amount": 0
+                }
+            }
+        
+        # Calculate totals
+        total_spend = sum(tx.get('amount', 0) for tx in filtered)
+        victor_spend = sum(tx.get('amount', 0) for tx in filtered if tx.get('owner') == 'Victor')
+        larissa_spend = sum(tx.get('amount', 0) for tx in filtered if tx.get('owner') == 'Larissa')
+        
+        # Calculate by category
+        category_totals = {}
+        for tx in filtered:
+            cat = tx.get('category', 'Outros') or 'Outros'
+            category_totals[cat] = category_totals.get(cat, 0) + tx.get('amount', 0)
+        
+        spend_by_category = [{"name": k, "value": v} for k, v in sorted(category_totals.items(), key=lambda x: -x[1])]
+        
+        # Settlement calculation
+        shared_txs = [tx for tx in filtered if tx.get('type') == 'Shared']
+        victor_shared = sum(tx.get('amount', 0) for tx in shared_txs if tx.get('owner') == 'Victor')
+        larissa_shared = sum(tx.get('amount', 0) for tx in shared_txs if tx.get('owner') == 'Larissa')
+        
+        total_shared = victor_shared + larissa_shared
+        half_share = total_shared / 2 if total_shared > 0 else 0
+        
+        if victor_shared > half_share:
+            direction = "Larissa deve a Victor"
+            amount = victor_shared - half_share
+        elif larissa_shared > half_share:
+            direction = "Victor deve a Larissa"
+            amount = larissa_shared - half_share
+        else:
+            direction = "Sem pendências"
+            amount = 0
+        
+        return {
+            "total_spend": total_spend,
+            "spend_by_person": [
+                {"name": "Victor", "value": victor_spend},
+                {"name": "Larissa", "value": larissa_spend}
+            ],
+            "spend_by_category": spend_by_category,
+            "settlement": {
+                "direction": direction,
+                "amount": round(amount, 2)
+            }
+        }
+    
+    # BIGQUERY MODE
+    try:
+        # Helper to query totals
+        def get_totals_bq(s_date, e_date):
+            q_totals = f"""
+                SELECT 
+                    IFNULL(SUM(amount), 0) as total_spend,
+                    IFNULL(SUM(CASE WHEN owner = 'Victor' THEN amount ELSE 0 END), 0) as victor_spend,
+                    IFNULL(SUM(CASE WHEN owner = 'Larissa' THEN amount ELSE 0 END), 0) as larissa_spend
+                FROM `{TABLE_GOLD}`
+                WHERE tenant_id = @tenant_id AND month_ref >= @s AND month_ref <= @e
+            """
+            
+            # Add dynamic filters if present
+            params_t = [
+                bigquery.ScalarQueryParameter("tenant_id", "STRING", tenant.tenant_id),
+                bigquery.ScalarQueryParameter("s", "STRING", s_date),
+                bigquery.ScalarQueryParameter("e", "STRING", e_date)
+            ]
+            
+            filter_clause_t = ""
+            if owner:
+                filter_clause_t += " AND owner = @owner"
+                params_t.append(bigquery.ScalarQueryParameter("owner", "STRING", owner))
+            if tx_type:
+                filter_clause_t += " AND type = @tx_type"
+                params_t.append(bigquery.ScalarQueryParameter("tx_type", "STRING", tx_type))
+            
+            q_totals = q_totals.replace(
+                "WHERE tenant_id = @tenant_id AND month_ref >= @s AND month_ref <= @e",
+                f"WHERE tenant_id = @tenant_id AND month_ref >= @s AND month_ref <= @e {filter_clause_t}",
+            )
+
+            conf_t = bigquery.QueryJobConfig(query_parameters=params_t)
+            res_t = list(bq_client.query(q_totals, job_config=conf_t))[0]
+            return res_t
+
+        # 1. Current Period
+        current = get_totals_bq(start, end_month)
+        
+        # 2. Last Year Period
+        def get_past_date_str_bq(date_str):
+            y, m = map(int, date_str.split('-'))
+            return f"{y-1}-{m:02d}"
+            
+        start_ly = get_past_date_str_bq(start)
+        end_ly = get_past_date_str_bq(end_month)
+        last_year = get_totals_bq(start_ly, end_ly)
+
+        # 3. Category Spend (Current Only)
+        base_where = "tenant_id = @tenant_id AND month_ref >= @start AND month_ref <= @end"
+        params_base = [
+            bigquery.ScalarQueryParameter("tenant_id", "STRING", tenant.tenant_id),
+            bigquery.ScalarQueryParameter("start", "STRING", start),
+            bigquery.ScalarQueryParameter("end", "STRING", end_month)
+        ]
+        
+        if owner:
+            base_where += " AND owner = @owner"
+            params_base.append(bigquery.ScalarQueryParameter("owner", "STRING", owner))
+        if tx_type:
+            base_where += " AND type = @tx_type"
+            params_base.append(bigquery.ScalarQueryParameter("tx_type", "STRING", tx_type))
+
+        query_cat = f"""
+            SELECT IFNULL(category, 'Outros') as category, SUM(amount) as value
+            FROM `{TABLE_GOLD}`
+            WHERE {base_where}
+            GROUP BY category
+            ORDER BY value DESC
+        """
+        job_config_cat = bigquery.QueryJobConfig(query_parameters=params_base)
+        result_cat = [dict(row) for row in bq_client.query(query_cat, job_config=job_config_cat)]
+        
+        # 4. Settlement Logic (Current Period, Shared Only)
+        # Re-using base params but forcing Shared type if not already filtered
+        settlement_where = base_where
+        settlement_params = list(params_base) # copy
+        
+        if not tx_type:
+            settlement_where += " AND type = 'Shared'"
+        
+        # If user filtered 'Individual', settlement query will return empty/zeros correctly if type='Shared' is enforced or inherent logic applies.
+        # But 'settlement_where' relies on base_where which might have "type = 'Individual'".
+        # If type='Individual', settlement should be n/a.
+        
+        query_settlement = f"""
+            SELECT 
+                owner,
+                SUM(amount) as shared_paid
+            FROM `{TABLE_GOLD}`
+            WHERE {settlement_where}
+            GROUP BY owner
+        """
+        job_config_set = bigquery.QueryJobConfig(query_parameters=settlement_params)
+        settlement_rows = [dict(row) for row in bq_client.query(query_settlement, job_config=job_config_set)]
+        
+        victor_paid = 0
+        larissa_paid = 0
+        for row in settlement_rows:
+            if row['owner'] == 'Victor': victor_paid = row['shared_paid'] or 0
+            if row['owner'] == 'Larissa': larissa_paid = row['shared_paid'] or 0
+            
+        total_shared = victor_paid + larissa_paid
+        half_share = total_shared / 2 if total_shared > 0 else 0
+        
+        if victor_paid > half_share:
+            direction = "Larissa deve a Victor"
+            amount = victor_paid - half_share
+        elif larissa_paid > half_share:
+            direction = "Victor deve a Larissa"
+            amount = larissa_paid - half_share
+        else:
+            direction = "Sem pendências"
+            amount = 0
+
+        return {
+            "total_spend": current.total_spend or 0,
+            "total_spend_last_year": last_year.total_spend or 0,
+            "spend_by_person": [
+                {
+                    "name": "Victor", 
+                    "value": current.victor_spend or 0,
+                    "value_last_year": last_year.victor_spend or 0
+                },
+                {
+                    "name": "Larissa", 
+                    "value": current.larissa_spend or 0,
+                    "value_last_year": last_year.larissa_spend or 0
+                }
+            ],
+            "spend_by_category": [{"name": r['category'], "value": r['value']} for r in result_cat],
+            "settlement": {
+                "direction": direction,
+                "amount": round(amount, 2)
+            }
+        }
+
+    except Exception as e:
+        print(f"Error fetching dashboard: {e}")
+        # Fallback: return error response
+        return {"error": str(e)}
+
+@app.get("/trend-data")
+def get_trend_data(
+    start: str,
+    end: str = None,
+    owner: str = None,
+    tx_type: str = None,
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """
+    Returns daily or monthly aggregated spend data for charts.
+    - Daily aggregation for ranges <= 90 days
+    - Monthly aggregation for longer ranges
+    """
+    _require_data_access(tenant)
+    from datetime import datetime, timedelta
+    
+    end_month = end or start
+    
+    # Calculate if we should use daily or monthly aggregation
+    # Parse start/end as YYYY-MM and calculate difference
+    start_date = datetime.strptime(start + "-01", "%Y-%m-%d")
+    end_date = datetime.strptime(end_month + "-01", "%Y-%m-%d")
+    # Move end_date to last day of month
+    if end_date.month == 12:
+        end_date = end_date.replace(year=end_date.year + 1, month=1) - timedelta(days=1)
+    else:
+        end_date = end_date.replace(month=end_date.month + 1) - timedelta(days=1)
+    
+    days_diff = (end_date - start_date).days
+    use_daily = days_diff <= 90
+    
+    # SQLITE MODE
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        if use_daily:
+            # Daily aggregation
+            query = """
+                SELECT date as period, SUM(amount) as total
+                FROM transactions_gold
+                WHERE tenant_id = ? AND month_ref >= ? AND month_ref <= ?
+            """
+            params = [tenant.tenant_id, start, end_month]
+        else:
+            # Monthly aggregation
+            query = """
+                SELECT month_ref as period, SUM(amount) as total
+                FROM transactions_gold
+                WHERE tenant_id = ? AND month_ref >= ? AND month_ref <= ?
+            """
+            params = [tenant.tenant_id, start, end_month]
+        
+        if owner:
+            query += " AND owner = ?"
+            params.append(owner)
+        if tx_type:
+            query += " AND type = ?"
+            params.append(tx_type)
+        
+        if use_daily:
+            query += " GROUP BY date ORDER BY date ASC"
+        else:
+            query += " GROUP BY month_ref ORDER BY month_ref ASC"
+        
+        c.execute(query, params)
+        results = [{"period": row[0], "total": row[1] or 0} for row in c.fetchall()]
+        conn.close()
+        
+        return {
+            "granularity": "daily" if use_daily else "monthly",
+            "data": results
+        }
+    
+    # MOCK MODE
+    if USE_MOCK or bq_client is None:
+        return {
+            "granularity": "daily" if use_daily else "monthly",
+            "data": []
+        }
+    
+    # BIGQUERY MODE - Analytics
+    try:
+        if use_daily:
+            query = f"""
+                SELECT date as period, SUM(amount) as total
+                FROM `{TABLE_GOLD}`
+                WHERE tenant_id = @tenant_id AND month_ref >= @start AND month_ref <= @end
+            """
+        else:
+            query = f"""
+                SELECT month_ref as period, SUM(amount) as total
+                FROM `{TABLE_GOLD}`
+                WHERE tenant_id = @tenant_id AND month_ref >= @start AND month_ref <= @end
+            """
+        
+        params = [
+            bigquery.ScalarQueryParameter("tenant_id", "STRING", tenant.tenant_id),
+            bigquery.ScalarQueryParameter("start", "STRING", start),
+            bigquery.ScalarQueryParameter("end", "STRING", end_month)
+        ]
+        
+        if owner:
+            query += " AND owner = @owner"
+            params.append(bigquery.ScalarQueryParameter("owner", "STRING", owner))
+        if tx_type:
+            query += " AND type = @tx_type"
+            params.append(bigquery.ScalarQueryParameter("tx_type", "STRING", tx_type))
+        
+        if use_daily:
+            query += " GROUP BY date ORDER BY date ASC"
+        else:
+            query += " GROUP BY month_ref ORDER BY month_ref ASC"
+        
+        job_config = bigquery.QueryJobConfig(query_parameters=params)
+        query_job = bq_client.query(query, job_config=job_config)
+        results = [{"period": row.period, "total": row.total or 0} for row in query_job]
+        
+        return {
+            "granularity": "daily" if use_daily else "monthly",
+            "data": results
+        }
+    except Exception as e:
+        print(f"Error fetching trend data from BigQuery: {e}")
+        return {
+            "granularity": "daily" if use_daily else "monthly",
+            "data": []
+        }
+
+@app.post("/sync-firestore-to-bigquery")
+def sync_firestore_to_bigquery(tenant: TenantContext = Depends(get_tenant_context)):
+    """
+    Synchronizes tenant transactions from Firestore to BigQuery.
+    Uses tenant-scoped DELETE + batch load to avoid cross-tenant data loss.
+    """
+    _require_data_access(tenant)
+    # Only works in cloud mode
+    if USE_SQLITE or USE_MOCK:
+        return {"status": "skipped", "message": "Sync only available in cloud mode", "synced_count": 0}
+    
+    if not db_firestore or not bq_client:
+        raise HTTPException(status_code=500, detail="Cloud clients not initialized")
+    
+    try:
+        # 1. Read Firestore and keep only this tenant
+        docs = db_firestore.collection(FIRESTORE_COLLECTION).stream()
+        
+        firestore_transactions = []
+        for doc in docs:
+            data = doc.to_dict() or {}
+            if (data.get("tenant_id") or DEFAULT_TENANT_ID) != tenant.tenant_id:
+                continue
+            data['id'] = doc.id
+            firestore_transactions.append(data)
+        
+        if not firestore_transactions:
+            return {"status": "success", "message": "No transactions to sync", "synced_count": 0}
+        
+        # 2. Remove only this tenant data from BigQuery before reloading
+        delete_query = f"DELETE FROM `{TABLE_GOLD}` WHERE tenant_id = @tenant_id"
+        delete_config = bigquery.QueryJobConfig(
+            query_parameters=[bigquery.ScalarQueryParameter("tenant_id", "STRING", tenant.tenant_id)]
+        )
+        bq_client.query(delete_query, job_config=delete_config).result()
+        
+        # 3. Prepare rows for batch insert
+        gold_rows = []
+        for tx in firestore_transactions:
+            gold_rows.append({
+                "id": tx.get('id'),
+                "date": tx.get('date'),
+                "month_ref": tx.get('month_ref'),
+                "amount": float(tx.get('amount') or 0),
+                "merchant_clean": tx.get('merchant_clean'),
+                "category": tx.get('category'),
+                "subcategory": tx.get('subcategory'),
+                "type": tx.get('type'),
+                "owner": tx.get('owner'),
+                "tenant_id": tenant.tenant_id,
+                "created_at": tx.get('created_at') or datetime.datetime.now().isoformat()
+            })
+        
+        # 4. Use load_table_from_json for batch insert (not streaming)
+        # This avoids the streaming buffer entirely
+        from google.cloud.bigquery import LoadJobConfig, SourceFormat
+        
+        job_config = LoadJobConfig(
+            source_format=SourceFormat.NEWLINE_DELIMITED_JSON,
+            write_disposition="WRITE_APPEND",
+        )
+        
+        load_job = bq_client.load_table_from_json(
+            gold_rows,
+            TABLE_GOLD,
+            job_config=job_config
+        )
+        load_job.result()  # Wait for completion
+        
+        return {
+            "status": "success",
+            "message": f"Synced {len(gold_rows)} transactions to BigQuery for tenant {tenant.tenant_id}",
+            "synced_count": len(gold_rows)
+        }
+        
+    except Exception as e:
+        print(f"Error syncing to BigQuery: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+if __name__ == "__main__":
+    import uvicorn
+    # Local dev run
+    uvicorn.run(app, host="0.0.0.0", port=8000)

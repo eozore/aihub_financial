@@ -1,0 +1,12 @@
+# Generated / local-only artifacts (do not commit)
+*.db
+
+# Local data (may contain personal/sensitive info)
+data/backups/
+data/uploads/
+data/exports/
+
+# Terraform local cache + state (may contain secrets)
+infra/.terraform/
+infra/terraform.tfstate
+infra/terraform.tfstate.*

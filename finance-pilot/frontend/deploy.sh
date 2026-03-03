@@ -1,0 +1,45 @@
+#!/bin/bash
+set -e
+
+PROJECT_ID="${PROJECT_ID:-aifin-project}"
+REGION="${REGION:-us-central1}"
+REPO="${REPO:-finance-repo}"
+IMAGE="${IMAGE:-finance-frontend}"
+TAG="${TAG:-latest}"
+BACKEND_URL="${BACKEND_URL:-https://finance-backend-ys7aiaicqa-uc.a.run.app}"
+TENANT_HEADER_NAME="${TENANT_HEADER_NAME:-X-Tenant-ID}"
+DEFAULT_TENANT_ID="${DEFAULT_TENANT_ID:-default}"
+FIREBASE_API_KEY="${FIREBASE_API_KEY:-AIzaSy...}"
+FIREBASE_AUTH_DOMAIN="${FIREBASE_AUTH_DOMAIN:-aifin-project-7321a.firebaseapp.com}"
+FIREBASE_PROJECT_ID="${FIREBASE_PROJECT_ID:-aifin-project-7321a}"
+FIREBASE_STORAGE_BUCKET="${FIREBASE_STORAGE_BUCKET:-aifin-project-7321a.firebasestorage.app}"
+FIREBASE_MESSAGING_SENDER_ID="${FIREBASE_MESSAGING_SENDER_ID:-98752190715}"
+FIREBASE_APP_ID="${FIREBASE_APP_ID:-1:98752190715:web:cf9933d73c437d94cbf85e}"
+IMAGE_URI="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$IMAGE:$TAG"
+ACTIVE_PROJECT="$(gcloud config get-value project 2>/dev/null || true)"
+
+echo "Active gcloud project: ${ACTIVE_PROJECT:-unset}"
+echo "Target deploy project: $PROJECT_ID"
+if [ -n "$ACTIVE_PROJECT" ] && [ "$ACTIVE_PROJECT" != "$PROJECT_ID" ]; then
+  echo "WARNING: projeto ativo difere do alvo. O deploy seguirá com --project=$PROJECT_ID."
+fi
+
+echo "1. Building Container..."
+gcloud builds submit \
+  --project "$PROJECT_ID" \
+  --config cloudbuild.yaml \
+  --substitutions="_IMAGE_NAME=$IMAGE_URI,_API_URL=$BACKEND_URL,_TENANT_HEADER_NAME=$TENANT_HEADER_NAME,_DEFAULT_TENANT_ID=$DEFAULT_TENANT_ID,_FIREBASE_API_KEY=$FIREBASE_API_KEY,_FIREBASE_AUTH_DOMAIN=$FIREBASE_AUTH_DOMAIN,_FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID,_FIREBASE_STORAGE_BUCKET=$FIREBASE_STORAGE_BUCKET,_FIREBASE_MESSAGING_SENDER_ID=$FIREBASE_MESSAGING_SENDER_ID,_FIREBASE_APP_ID=$FIREBASE_APP_ID" \
+  .
+
+echo "2. Deploying to Cloud Run..."
+gcloud run deploy "$IMAGE" \
+  --project "$PROJECT_ID" \
+  --image "$IMAGE_URI" \
+  --platform managed \
+  --region "$REGION" \
+  --allow-unauthenticated \
+  --service-account "finance-backend-sa@$PROJECT_ID.iam.gserviceaccount.com" \
+  --memory 1Gi \
+  --set-env-vars="NEXT_PUBLIC_API_URL=$BACKEND_URL,NEXT_PUBLIC_TENANT_HEADER_NAME=$TENANT_HEADER_NAME,NEXT_PUBLIC_DEFAULT_TENANT_ID=$DEFAULT_TENANT_ID,NEXT_PUBLIC_FIREBASE_API_KEY=$FIREBASE_API_KEY,NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=$FIREBASE_AUTH_DOMAIN,NEXT_PUBLIC_FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID,NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=$FIREBASE_STORAGE_BUCKET,NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=$FIREBASE_MESSAGING_SENDER_ID,NEXT_PUBLIC_FIREBASE_APP_ID=$FIREBASE_APP_ID"
+
+echo "Done!"
