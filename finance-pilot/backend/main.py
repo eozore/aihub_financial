@@ -27,6 +27,38 @@ from config import (
     OWNERS,
 )
 
+# --- Dedicated module imports (deduplication - Phase 5) ---
+from helpers import (
+    normalize_owner as _normalize_owner,
+    parse_br_money as _parse_br_money,
+    parse_br_percent as _parse_br_percent,
+    parse_month_ref as _parse_month_ref,
+    parse_ddmmyyyy_to_iso as _parse_ddmmyyyy_to_iso,
+    parse_signed_amount as _parse_signed_amount,
+    category_for_current_account as _category_for_current_account,
+    utc_now_iso as _utc_now_iso,
+    normalize_plan as _normalize_plan,
+    plan_limits as _plan_limits,
+    normalize_email as _normalize_email,
+)
+from auth import (
+    sanitize_tenant_id as _sanitize_tenant_id,
+    extract_tenant_from_claims as _extract_tenant_from_claims,
+    require_authenticated_user as _require_authenticated_user,
+    require_data_access as _require_data_access,
+)
+from models import (
+    TenantContext,
+    TransactionUpdate,
+    TransactionCreate,
+    PlanUpdate,
+    WorkspaceCreate,
+    WorkspaceUpdate,
+    WorkspaceInviteCreate,
+    NetWorthRowUpdate,
+)
+from upload_validation import validate_and_read_upload as _validate_and_read_upload
+
 logger = logging.getLogger("finance-pilot")
 
 def _parse_email_list(value: str) -> List[str]:
@@ -76,132 +108,6 @@ else:
         logger.warning("Could not initialize cloud clients: %s", e)
         USE_MOCK = True
 
-class TenantContext(BaseModel):
-    tenant_id: str
-    user_id: Optional[str] = None
-    user_email: Optional[str] = None
-
-def _normalize_owner(owner: Optional[str]) -> str:
-    raw = (owner or "").strip()
-    for configured_owner in OWNERS:
-        if raw.lower() == configured_owner.lower():
-            return configured_owner
-    raise HTTPException(
-        status_code=400,
-        detail=f"Owner must be one of: {', '.join(OWNERS)}"
-    )
-
-def _parse_br_money(value: Optional[object]) -> Optional[float]:
-    if value is None:
-        return None
-    raw = str(value).strip()
-    if not raw or raw.lower() == "nan":
-        return None
-    normalized = raw.replace("R$", "").replace(" ", "")
-    normalized = normalized.replace(".", "").replace(",", ".")
-    try:
-        return float(normalized)
-    except Exception:
-        return None
-
-def _parse_br_percent(value: Optional[object]) -> Optional[float]:
-    if value is None:
-        return None
-    raw = str(value).strip()
-    if not raw or raw.lower() == "nan":
-        return None
-    normalized = raw.replace("%", "").replace(" ", "")
-    normalized = normalized.replace(".", "").replace(",", ".")
-    try:
-        return float(normalized) / 100.0
-    except Exception:
-        return None
-
-def _parse_month_ref(value: Optional[object]) -> Optional[str]:
-    if value is None:
-        return None
-    raw = str(value).strip()
-    if not raw:
-        return None
-    try:
-        month_str, year_str = raw.split("/", 1)
-        month = int(month_str)
-        year = int(year_str)
-        if month < 1 or month > 12:
-            return None
-        if year < 1900 or year > 2100:
-            return None
-        return f"{year:04d}-{month:02d}"
-    except Exception:
-        return None
-
-def _parse_ddmmyyyy_to_iso(value: Optional[object]) -> Optional[str]:
-    if value is None:
-        return None
-    raw = str(value).strip()
-    if not raw:
-        return None
-    try:
-        day_str, month_str, year_str = raw.split("/", 2)
-        day = int(day_str)
-        month = int(month_str)
-        year = int(year_str)
-        parsed = datetime.date(year, month, day)
-        return parsed.isoformat()
-    except Exception:
-        return None
-
-def _parse_signed_amount(value: Optional[object]) -> Optional[float]:
-    if value is None:
-        return None
-    raw = str(value).strip()
-    if not raw:
-        return None
-    normalized = raw.replace("R$", "").replace(" ", "")
-    if "," in normalized:
-        normalized = normalized.replace(".", "").replace(",", ".")
-    try:
-        return float(normalized)
-    except Exception:
-        return None
-
-def _category_for_current_account(description: str, is_card_invoice_payment: bool) -> str:
-    lowered = description.lower()
-    if is_card_invoice_payment:
-        return "Pagamento de fatura"
-    if "boleto" in lowered:
-        return "Boletos"
-    if "imposto" in lowered or "receita federal" in lowered:
-        return "Impostos"
-    if "transfer" in lowered or "pix" in lowered:
-        return "Transferências"
-    return "Conta Corrente"
-
-def _sanitize_tenant_id(raw_tenant: Optional[str]) -> Optional[str]:
-    if raw_tenant is None:
-        return None
-    tenant_id = raw_tenant.strip()
-    if not tenant_id:
-        return None
-    if len(tenant_id) > 64 or not re.fullmatch(r"[A-Za-z0-9_.-]+", tenant_id):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid tenant_id. Use only letters, numbers, '.', '_' or '-'."
-        )
-    return tenant_id
-
-def _extract_tenant_from_claims(claims: dict) -> Optional[str]:
-    claim_tenant = claims.get("tenant_id")
-    if isinstance(claim_tenant, str) and claim_tenant.strip():
-        return claim_tenant.strip()
-
-    firebase_claim = claims.get("firebase")
-    if isinstance(firebase_claim, dict):
-        firebase_tenant = firebase_claim.get("tenant")
-        if isinstance(firebase_tenant, str) and firebase_tenant.strip():
-            return firebase_tenant.strip()
-
-    return None
 
 def get_tenant_context(request: Request) -> TenantContext:
     header_tenant = _sanitize_tenant_id(request.headers.get(TENANT_HEADER_NAME))
@@ -467,18 +373,6 @@ def ensure_bigquery_tenant_columns():
             logger.warning("Could not ensure tenant_id column on %s: %s", table_name, exc)
 
 ensure_bigquery_tenant_columns()
-
-def _utc_now_iso() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-def _normalize_plan(plan_type: Optional[str]) -> str:
-    normalized = (plan_type or "free").strip().lower()
-    if normalized not in PLAN_LIMITS:
-        raise HTTPException(status_code=400, detail=f"Invalid plan_type: {plan_type}")
-    return normalized
-
-def _plan_limits(plan_type: Optional[str]) -> dict:
-    return PLAN_LIMITS[_normalize_plan(plan_type)]
 
 def ensure_sqlite_workspace_tables():
     if not USE_SQLITE:
@@ -1087,10 +981,6 @@ def _tenant_has_data(tenant_id: Optional[str]) -> bool:
     return any(True for _ in job.result())
 
 
-def _normalize_email(email: Optional[str]) -> str:
-    return (email or "").strip().lower()
-
-
 def _is_premium_email(email: Optional[str]) -> bool:
     return _normalize_email(email) in PREMIUM_EMAILS
 
@@ -1308,52 +1198,6 @@ def load_mock_data() -> List[dict]:
     
     return data
 
-class TransactionUpdate(BaseModel):
-    """Model for updating an existing transaction - all fields optional"""
-    date: Optional[str] = None  # YYYY-MM-DD
-    amount: Optional[float] = None
-    merchant_clean: Optional[str] = None
-    category: Optional[str] = None
-    subcategory: Optional[str] = None
-    owner: Optional[str] = None  # Owner name (configured via OWNERS env var)
-    type: Optional[str] = None  # 'Individual' or 'Shared'
-
-class TransactionCreate(BaseModel):
-    """Model for creating a new transaction"""
-    date: str  # YYYY-MM-DD
-    amount: float
-    merchant_clean: str
-    category: str
-    subcategory: Optional[str] = None
-    owner: str  # Owner name (configured via OWNERS env var)
-    type: str  # 'Individual' or 'Shared'
-
-class PlanUpdate(BaseModel):
-    plan_type: Literal["free", "paid"]
-
-class WorkspaceCreate(BaseModel):
-    name: str
-
-
-class WorkspaceUpdate(BaseModel):
-    name: str
-
-class WorkspaceInviteCreate(BaseModel):
-    invitee_email: str
-    invite_mode: Literal["shared", "isolated"] = "shared"
-    target_workspace_name: Optional[str] = None
-
-class NetWorthRowUpdate(BaseModel):
-    salary: Optional[float] = None
-    other_income: Optional[float] = None
-    income_total: Optional[float] = None
-    expense_fixed: Optional[float] = None
-    expense_variable: Optional[float] = None
-    expense_total: Optional[float] = None
-    cash_end_balance: Optional[float] = None
-    net_worth_total: Optional[float] = None
-    debt_ratio: Optional[float] = None
-    notes: Optional[str] = None
 
 @app.get("/")
 def read_root():
@@ -1369,14 +1213,6 @@ def list_owners():
     """Returns the configured list of owners (people sharing expenses)."""
     return {"owners": OWNERS}
 
-def _require_authenticated_user(tenant: TenantContext):
-    if not tenant.user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return tenant.user_id
-
-def _require_data_access(tenant: TenantContext):
-    if REQUIRE_AUTH_FOR_DATA and not tenant.user_id:
-        raise HTTPException(status_code=401, detail="Authentication required for data access")
 
 @app.get("/me")
 def get_me(tenant: TenantContext = Depends(get_tenant_context)):
@@ -1759,27 +1595,6 @@ def accept_invite(invite_id: str, tenant: TenantContext = Depends(get_tenant_con
     )
     return {"status": "accepted", "workspace_id": accepted_workspace_id}
 
-MAX_UPLOAD_SIZE_BYTES = int(os.environ.get("MAX_UPLOAD_SIZE_BYTES", str(10 * 1024 * 1024)))  # 10 MB default
-ALLOWED_CSV_MIME_TYPES = {"text/csv", "application/vnd.ms-excel", "application/octet-stream"}
-
-async def _validate_and_read_upload(file: UploadFile, label: str = "file") -> bytes:
-    """Validate uploaded file size, extension and MIME type, then return contents."""
-    if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Only CSV files are allowed")
-    if file.content_type and file.content_type not in ALLOWED_CSV_MIME_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid content type '{file.content_type}'. Expected CSV.",
-        )
-    contents = await file.read()
-    if len(contents) == 0:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
-    if len(contents) > MAX_UPLOAD_SIZE_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File too large. Maximum size is {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)} MB",
-        )
-    return contents
 
 @app.post("/upload")
 async def upload_invoice(
@@ -1830,7 +1645,33 @@ async def upload_invoice(
 
         # 3. Process file and insert into database
         processor = TransactionProcessor()
-        count = processor.process_file(contents, file.filename, owner, month_ref, tenant.tenant_id)
+        process_result = processor.process_file(contents, file.filename, owner, month_ref, tenant.tenant_id)
+        if isinstance(process_result, dict):
+            count = int(process_result.get("count", 0))
+            gold_rows = process_result.get("gold_rows") or []
+        else:
+            count = int(process_result or 0)
+            gold_rows = []
+
+        # Keep Firestore in sync so /transactions can list uploaded rows immediately.
+        if not USE_SQLITE and db_firestore is not None and gold_rows:
+            batch = db_firestore.batch()
+            op_count = 0
+            for row in gold_rows:
+                doc_id = row.get("id")
+                if not doc_id:
+                    continue
+                payload = dict(row)
+                payload["tenant_id"] = payload.get("tenant_id") or tenant.tenant_id
+                ref = db_firestore.collection(FIRESTORE_COLLECTION).document(doc_id)
+                batch.set(ref, payload, merge=True)
+                op_count += 1
+                if op_count % 400 == 0:
+                    batch.commit()
+                    batch = db_firestore.batch()
+            if op_count % 400 != 0:
+                batch.commit()
+            logger.info("Synced %d uploaded rows to Firestore", op_count)
         
         # Invalidate dashboard cache for this tenant
         dashboard_cache.invalidate_prefix(f"dashboard:{tenant.tenant_id}:")
@@ -2608,37 +2449,97 @@ def get_transactions(
         page = filtered[offset:offset + limit]
         return {"data": page, "total": total, "limit": limit, "offset": offset}
     
+    def _query_transactions_bigquery(fetch_all: bool = False):
+        if bq_client is None:
+            return {"data": [], "total": 0, "limit": limit, "offset": offset}
+
+        where = "tenant_id = @tenant_id AND month_ref >= @start AND month_ref <= @end"
+        params = [
+            bigquery.ScalarQueryParameter("tenant_id", "STRING", tenant.tenant_id),
+            bigquery.ScalarQueryParameter("start", "STRING", start),
+            bigquery.ScalarQueryParameter("end", "STRING", end_month),
+        ]
+        if owner:
+            where += " AND owner = @owner"
+            params.append(bigquery.ScalarQueryParameter("owner", "STRING", owner))
+        if tx_type:
+            where += " AND type = @tx_type"
+            params.append(bigquery.ScalarQueryParameter("tx_type", "STRING", tx_type))
+
+        count_query = f"SELECT COUNT(*) AS total FROM `{TABLE_GOLD}` WHERE {where}"
+        count_config = bigquery.QueryJobConfig(query_parameters=params)
+        count_rows = list(bq_client.query(count_query, job_config=count_config))
+        total = int(count_rows[0]["total"]) if count_rows else 0
+
+        data_query = f"""
+            SELECT id, date, month_ref, amount, merchant_clean, category, subcategory, owner, type, tenant_id, created_at
+            FROM `{TABLE_GOLD}`
+            WHERE {where}
+            ORDER BY date DESC
+        """
+        data_params = list(params)
+        if not fetch_all:
+            data_query += "\nLIMIT @limit OFFSET @offset"
+            data_params.extend(
+                [
+                    bigquery.ScalarQueryParameter("limit", "INT64", limit),
+                    bigquery.ScalarQueryParameter("offset", "INT64", offset),
+                ]
+            )
+        data_config = bigquery.QueryJobConfig(query_parameters=data_params)
+        rows = [dict(row) for row in bq_client.query(data_query, job_config=data_config)]
+        return {"data": rows, "total": total, "limit": limit, "offset": offset}
+
     # FIRESTORE MODE (Cloud)
     try:
         query = db_firestore.collection(FIRESTORE_COLLECTION)
         query = query.where("month_ref", ">=", start).where("month_ref", "<=", end_month)
-        
+
         docs = query.stream()
         results = []
         for doc in docs:
             data = doc.to_dict() or {}
-            data['id'] = doc.id
+            data["id"] = doc.id
 
             doc_tenant = data.get("tenant_id") or DEFAULT_TENANT_ID
             if doc_tenant != tenant.tenant_id:
                 continue
             data["tenant_id"] = doc_tenant
-            
-            if owner and data.get('owner') != owner:
+
+            if owner and data.get("owner") != owner:
                 continue
-            if tx_type and data.get('type') != tx_type:
+            if tx_type and data.get("type") != tx_type:
                 continue
-                
+
             results.append(data)
-        
-        results.sort(key=lambda x: x.get('date', ''), reverse=True)
-        total = len(results)
-        page = results[offset:offset + limit]
-        
+
+        if not results:
+            logger.info("No Firestore transactions found for tenant %s; falling back to BigQuery.", tenant.tenant_id)
+            return _query_transactions_bigquery()
+
+        bq_result = _query_transactions_bigquery(fetch_all=True)
+        bq_rows = bq_result.get("data", [])
+        if not bq_rows:
+            results.sort(key=lambda x: x.get("date", ""), reverse=True)
+            total = len(results)
+            page = results[offset:offset + limit]
+            return {"data": page, "total": total, "limit": limit, "offset": offset}
+
+        merged_by_id = {row.get("id"): row for row in bq_rows if row.get("id")}
+        for row in results:
+            row_id = row.get("id")
+            if not row_id:
+                continue
+            merged_by_id[row_id] = {**merged_by_id.get(row_id, {}), **row}
+
+        merged_rows = list(merged_by_id.values())
+        merged_rows.sort(key=lambda x: x.get("date", ""), reverse=True)
+        total = len(merged_rows)
+        page = merged_rows[offset:offset + limit]
         return {"data": page, "total": total, "limit": limit, "offset": offset}
     except Exception as e:
-        logger.error("Error: %s", e)
-        return {"data": [], "total": 0, "limit": limit, "offset": offset}
+        logger.warning("Firestore transaction query failed; falling back to BigQuery: %s", e)
+        return _query_transactions_bigquery()
 
 @app.put("/transactions/{transaction_id}")
 def update_transaction(
@@ -2724,20 +2625,81 @@ def update_transaction(
         
         if not update_dict:
             return {"status": "no changes"}
-        
+
+        def _fetch_bigquery_transaction():
+            if bq_client is None:
+                return None
+            fetch_query = f"""
+                SELECT id, date, month_ref, amount, merchant_clean, category, subcategory, owner, type, tenant_id, created_at
+                FROM `{TABLE_GOLD}`
+                WHERE id = @id AND tenant_id = @tenant_id
+                LIMIT 1
+            """
+            fetch_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("id", "STRING", transaction_id),
+                    bigquery.ScalarQueryParameter("tenant_id", "STRING", tenant.tenant_id),
+                ]
+            )
+            rows = [dict(row) for row in bq_client.query(fetch_query, job_config=fetch_config)]
+            return rows[0] if rows else None
+
+        def _update_bigquery_transaction():
+            if bq_client is None:
+                return
+            field_types = {
+                "date": "STRING",
+                "month_ref": "STRING",
+                "amount": "FLOAT64",
+                "merchant_clean": "STRING",
+                "category": "STRING",
+                "subcategory": "STRING",
+                "owner": "STRING",
+                "type": "STRING",
+            }
+            set_clauses = []
+            query_parameters = [
+                bigquery.ScalarQueryParameter("id", "STRING", transaction_id),
+                bigquery.ScalarQueryParameter("tenant_id", "STRING", tenant.tenant_id),
+            ]
+            for field, value in update_dict.items():
+                set_clauses.append(f"{field} = @{field}")
+                query_parameters.append(
+                    bigquery.ScalarQueryParameter(field, field_types[field], value)
+                )
+            update_query = f"""
+                UPDATE `{TABLE_GOLD}`
+                SET {', '.join(set_clauses)}
+                WHERE id = @id AND tenant_id = @tenant_id
+            """
+            update_config = bigquery.QueryJobConfig(query_parameters=query_parameters)
+            bq_client.query(update_query, job_config=update_config).result()
+
         doc_ref = db_firestore.collection(FIRESTORE_COLLECTION).document(transaction_id)
         doc = doc_ref.get()
-        if not doc.exists:
+        if doc.exists:
+            current_data = doc.to_dict() or {}
+            if (current_data.get("tenant_id") or DEFAULT_TENANT_ID) != tenant.tenant_id:
+                raise HTTPException(status_code=404, detail="Transaction not found")
+            doc_ref.update({**update_dict, "updated_at": datetime.datetime.now().isoformat()})
+            _update_bigquery_transaction()
+            dashboard_cache.invalidate_prefix(f"dashboard:{tenant.tenant_id}:")
+            return {"status": "updated", "id": transaction_id}
+
+        existing_bq = _fetch_bigquery_transaction()
+        if not existing_bq:
             raise HTTPException(status_code=404, detail="Transaction not found")
 
-        current_data = doc.to_dict() or {}
-        if (current_data.get("tenant_id") or DEFAULT_TENANT_ID) != tenant.tenant_id:
-            raise HTTPException(status_code=404, detail="Transaction not found")
+        _update_bigquery_transaction()
 
-        update_dict['updated_at'] = datetime.datetime.now().isoformat()
-        doc_ref.update(update_dict)
+        merged_payload = dict(existing_bq)
+        merged_payload.update(update_dict)
+        merged_payload["tenant_id"] = tenant.tenant_id
+        merged_payload["created_at"] = merged_payload.get("created_at") or datetime.datetime.now().isoformat()
+        merged_payload["updated_at"] = datetime.datetime.now().isoformat()
+        doc_ref.set(merged_payload, merge=True)
+
         dashboard_cache.invalidate_prefix(f"dashboard:{tenant.tenant_id}:")
-        _sync_to_bq_if_cloud(tenant.tenant_id)
         return {"status": "updated", "id": transaction_id}
     except HTTPException:
         raise
@@ -2858,6 +2820,12 @@ def delete_transaction(transaction_id: str, tenant: TenantContext = Depends(get_
 
 from cache import dashboard_cache
 
+def _serialize_firestore_value(value):
+    """Convert Firestore-specific types (e.g. DatetimeWithNanoseconds) to JSON-serializable types."""
+    if hasattr(value, 'isoformat'):
+        return value.isoformat()
+    return value
+
 def _sync_to_bq_if_cloud(tenant_id: str):
     """Trigger a lightweight BigQuery sync after Firestore writes.
     
@@ -2879,8 +2847,8 @@ def _sync_to_bq_if_cloud(tenant_id: str):
             data = doc.to_dict() or {}
             gold_rows.append({
                 "id": doc.id,
-                "date": data.get("date"),
-                "month_ref": data.get("month_ref"),
+                "date": _serialize_firestore_value(data.get("date")),
+                "month_ref": _serialize_firestore_value(data.get("month_ref")),
                 "amount": float(data.get("amount") or 0),
                 "merchant_clean": data.get("merchant_clean"),
                 "category": data.get("category"),
@@ -2888,7 +2856,7 @@ def _sync_to_bq_if_cloud(tenant_id: str):
                 "type": data.get("type"),
                 "owner": data.get("owner"),
                 "tenant_id": tenant_id,
-                "created_at": data.get("created_at") or datetime.datetime.now().isoformat(),
+                "created_at": _serialize_firestore_value(data.get("created_at")) or datetime.datetime.now().isoformat(),
             })
         
         # Delete tenant data from BQ and reload
@@ -2925,6 +2893,8 @@ def get_dashboard_summary(
     """
     _require_data_access(tenant)
     end_month = end or start
+    if end_month < start:
+        start, end_month = end_month, start
 
     cache_key = f"dashboard:{tenant.tenant_id}:{start}:{end_month}:{owner}:{tx_type}"
     cached = dashboard_cache.get(cache_key)
@@ -3000,45 +2970,52 @@ def get_dashboard_summary(
         result_cat = [dict(r) for r in c.fetchall()]
         
         # 4. Settlement Logic (only for Shared transactions, Current Period)
-        settlement_where = "tenant_id = ? AND month_ref >= ? AND month_ref <= ?"
-        settlement_params = [tenant.tenant_id, start, end_month]
-        if owner:
-            settlement_where += " AND owner = ?"
-            settlement_params.append(owner)
-        
-        c.execute(f"""
-            SELECT 
-                owner,
-                SUM(amount) as shared_paid
-            FROM transactions_gold
-            WHERE {settlement_where} AND type = 'Shared'
-            GROUP BY owner
-        """, settlement_params)
-        settlement_rows = [dict(r) for r in c.fetchall()]
-        conn.close()
-        
-        # Calculate settlement (split shared expenses evenly among all owners)
-        paid_by_owner = {}
-        for row in settlement_rows:
-            paid_by_owner[row['owner']] = row['shared_paid'] or 0
-            
-        total_shared = sum(paid_by_owner.values())
-        num_owners = len(OWNERS) if OWNERS else 2
-        fair_share = total_shared / num_owners if total_shared > 0 else 0
-        
-        # Find who owes whom (simplified: largest overpayer vs largest underpayer)
-        balances = {o: paid_by_owner.get(o, 0) - fair_share for o in OWNERS}
-        overpayers = {o: b for o, b in balances.items() if b > 0}
-        underpayers = {o: b for o, b in balances.items() if b < 0}
-        
-        if overpayers and underpayers:
-            top_overpayer = max(overpayers, key=overpayers.get)
-            top_underpayer = min(underpayers, key=underpayers.get)
-            direction = f"{top_underpayer} deve a {top_overpayer}"
-            amount = abs(underpayers[top_underpayer])
-        else:
+        # When tx_type is set and is not "Shared", settlement is not applicable —
+        # skip the query entirely and return zeroed settlement data.
+        if tx_type and tx_type != "Shared":
+            conn.close()
             direction = "Sem pendências"
             amount = 0
+        else:
+            settlement_where = "tenant_id = ? AND month_ref >= ? AND month_ref <= ?"
+            settlement_params = [tenant.tenant_id, start, end_month]
+            if owner:
+                settlement_where += " AND owner = ?"
+                settlement_params.append(owner)
+            
+            c.execute(f"""
+                SELECT 
+                    owner,
+                    SUM(amount) as shared_paid
+                FROM transactions_gold
+                WHERE {settlement_where} AND type = 'Shared'
+                GROUP BY owner
+            """, settlement_params)
+            settlement_rows = [dict(r) for r in c.fetchall()]
+            conn.close()
+            
+            # Calculate settlement (split shared expenses evenly among all owners)
+            paid_by_owner = {}
+            for row in settlement_rows:
+                paid_by_owner[row['owner']] = row['shared_paid'] or 0
+                
+            total_shared = sum(paid_by_owner.values())
+            num_owners = len(OWNERS) if OWNERS else 2
+            fair_share = total_shared / num_owners if total_shared > 0 else 0
+            
+            # Find who owes whom (simplified: largest overpayer vs largest underpayer)
+            balances = {o: paid_by_owner.get(o, 0) - fair_share for o in OWNERS}
+            overpayers = {o: b for o, b in balances.items() if b > 0}
+            underpayers = {o: b for o, b in balances.items() if b < 0}
+            
+            if overpayers and underpayers:
+                top_overpayer = max(overpayers, key=overpayers.get)
+                top_underpayer = min(underpayers, key=underpayers.get)
+                direction = f"{top_underpayer} deve a {top_overpayer}"
+                amount = abs(underpayers[top_underpayer])
+            else:
+                direction = "Sem pendências"
+                amount = 0
 
         _sqlite_result = {
             "total_spend": current_totals['total_spend'] or 0,
@@ -3098,28 +3075,34 @@ def get_dashboard_summary(
         
         spend_by_category = [{"name": k, "value": v} for k, v in sorted(category_totals.items(), key=lambda x: -x[1])]
         
-        # Settlement calculation (dynamic owners)
-        shared_txs = [tx for tx in filtered if tx.get('type') == 'Shared']
-        shared_per_owner = {}
-        for o in OWNERS:
-            shared_per_owner[o] = sum(tx.get('amount', 0) for tx in shared_txs if tx.get('owner') == o)
-        
-        total_shared = sum(shared_per_owner.values())
-        num_owners = len(OWNERS) if OWNERS else 2
-        fair_share = total_shared / num_owners if total_shared > 0 else 0
-        
-        balances = {o: shared_per_owner.get(o, 0) - fair_share for o in OWNERS}
-        overpayers = {o: b for o, b in balances.items() if b > 0}
-        underpayers = {o: b for o, b in balances.items() if b < 0}
-        
-        if overpayers and underpayers:
-            top_overpayer = max(overpayers, key=overpayers.get)
-            top_underpayer = min(underpayers, key=underpayers.get)
-            direction = f"{top_underpayer} deve a {top_overpayer}"
-            amount = abs(underpayers[top_underpayer])
-        else:
+        # Settlement calculation (only for Shared transactions)
+        # When tx_type is set and is not "Shared", settlement is not applicable —
+        # return zeroed settlement data explicitly.
+        if tx_type and tx_type != "Shared":
             direction = "Sem pendências"
             amount = 0
+        else:
+            shared_txs = [tx for tx in filtered if tx.get('type') == 'Shared']
+            shared_per_owner = {}
+            for o in OWNERS:
+                shared_per_owner[o] = sum(tx.get('amount', 0) for tx in shared_txs if tx.get('owner') == o)
+            
+            total_shared = sum(shared_per_owner.values())
+            num_owners = len(OWNERS) if OWNERS else 2
+            fair_share = total_shared / num_owners if total_shared > 0 else 0
+            
+            balances = {o: shared_per_owner.get(o, 0) - fair_share for o in OWNERS}
+            overpayers = {o: b for o, b in balances.items() if b > 0}
+            underpayers = {o: b for o, b in balances.items() if b < 0}
+            
+            if overpayers and underpayers:
+                top_overpayer = max(overpayers, key=overpayers.get)
+                top_underpayer = min(underpayers, key=underpayers.get)
+                direction = f"{top_underpayer} deve a {top_overpayer}"
+                amount = abs(underpayers[top_underpayer])
+            else:
+                direction = "Sem pendências"
+                amount = 0
         
         _mock_result = {
             "total_spend": total_spend,
@@ -3223,48 +3206,56 @@ def get_dashboard_summary(
         result_cat = [dict(row) for row in bq_client.query(query_cat, job_config=job_config_cat)]
         
         # 4. Settlement Logic (Current Period, Shared Only)
-        # Re-using base params but forcing Shared type if not already filtered
-        settlement_where = base_where
-        settlement_params = list(params_base) # copy
-        
-        if not tx_type:
-            settlement_where += " AND type = 'Shared'"
-        
-        # If user filtered 'Individual', settlement query will return empty/zeros correctly if type='Shared' is enforced or inherent logic applies.
-        # But 'settlement_where' relies on base_where which might have "type = 'Individual'".
-        # If type='Individual', settlement should be n/a.
-        
-        query_settlement = f"""
-            SELECT 
-                owner,
-                SUM(amount) as shared_paid
-            FROM `{TABLE_GOLD}`
-            WHERE {settlement_where}
-            GROUP BY owner
-        """
-        job_config_set = bigquery.QueryJobConfig(query_parameters=settlement_params)
-        settlement_rows = [dict(row) for row in bq_client.query(query_settlement, job_config=job_config_set)]
-        
-        paid_by_owner = {}
-        for row in settlement_rows:
-            paid_by_owner[row['owner']] = row['shared_paid'] or 0
-            
-        total_shared = sum(paid_by_owner.values())
-        num_owners = len(OWNERS) if OWNERS else 2
-        fair_share = total_shared / num_owners if total_shared > 0 else 0
-        
-        balances = {o: paid_by_owner.get(o, 0) - fair_share for o in OWNERS}
-        overpayers = {o: b for o, b in balances.items() if b > 0}
-        underpayers = {o: b for o, b in balances.items() if b < 0}
-        
-        if overpayers and underpayers:
-            top_overpayer = max(overpayers, key=overpayers.get)
-            top_underpayer = min(underpayers, key=underpayers.get)
-            direction = f"{top_underpayer} deve a {top_overpayer}"
-            amount = abs(underpayers[top_underpayer])
-        else:
+        # When tx_type is set and is not "Shared", settlement is not applicable —
+        # skip the query entirely and return zeroed settlement data.
+        if tx_type and tx_type != "Shared":
             direction = "Sem pendências"
             amount = 0
+        else:
+            # Build settlement_where independently from base_where — only include
+            # tenant_id and date range filters, NOT the tx_type filter.
+            settlement_where = "tenant_id = @tenant_id AND month_ref >= @start AND month_ref <= @end"
+            settlement_params = [
+                bigquery.ScalarQueryParameter("tenant_id", "STRING", tenant.tenant_id),
+                bigquery.ScalarQueryParameter("start", "STRING", start),
+                bigquery.ScalarQueryParameter("end", "STRING", end_month),
+            ]
+            if owner:
+                settlement_where += " AND owner = @owner"
+                settlement_params.append(bigquery.ScalarQueryParameter("owner", "STRING", owner))
+            settlement_where += " AND type = 'Shared'"
+
+            query_settlement = f"""
+                SELECT 
+                    owner,
+                    SUM(amount) as shared_paid
+                FROM `{TABLE_GOLD}`
+                WHERE {settlement_where}
+                GROUP BY owner
+            """
+            job_config_set = bigquery.QueryJobConfig(query_parameters=settlement_params)
+            settlement_rows = [dict(row) for row in bq_client.query(query_settlement, job_config=job_config_set)]
+
+            paid_by_owner = {}
+            for row in settlement_rows:
+                paid_by_owner[row['owner']] = row['shared_paid'] or 0
+
+            total_shared = sum(paid_by_owner.values())
+            num_owners = len(OWNERS) if OWNERS else 2
+            fair_share = total_shared / num_owners if total_shared > 0 else 0
+
+            balances = {o: paid_by_owner.get(o, 0) - fair_share for o in OWNERS}
+            overpayers = {o: b for o, b in balances.items() if b > 0}
+            underpayers = {o: b for o, b in balances.items() if b < 0}
+
+            if overpayers and underpayers:
+                top_overpayer = max(overpayers, key=overpayers.get)
+                top_underpayer = min(underpayers, key=underpayers.get)
+                direction = f"{top_underpayer} deve a {top_overpayer}"
+                amount = abs(underpayers[top_underpayer])
+            else:
+                direction = "Sem pendências"
+                amount = 0
 
         _bq_result = {
             "total_spend": current.get('total_spend', 0),
@@ -3308,6 +3299,8 @@ def get_trend_data(
     from datetime import datetime, timedelta
     
     end_month = end or start
+    if end_month < start:
+        start, end_month = end_month, start
     
     # Calculate if we should use daily or monthly aggregation
     # Parse start/end as YYYY-MM and calculate difference
@@ -3461,8 +3454,8 @@ def sync_firestore_to_bigquery(tenant: TenantContext = Depends(get_tenant_contex
         for tx in firestore_transactions:
             gold_rows.append({
                 "id": tx.get('id'),
-                "date": tx.get('date'),
-                "month_ref": tx.get('month_ref'),
+                "date": _serialize_firestore_value(tx.get('date')),
+                "month_ref": _serialize_firestore_value(tx.get('month_ref')),
                 "amount": float(tx.get('amount') or 0),
                 "merchant_clean": tx.get('merchant_clean'),
                 "category": tx.get('category'),
@@ -3470,7 +3463,7 @@ def sync_firestore_to_bigquery(tenant: TenantContext = Depends(get_tenant_contex
                 "type": tx.get('type'),
                 "owner": tx.get('owner'),
                 "tenant_id": tenant.tenant_id,
-                "created_at": tx.get('created_at') or datetime.datetime.now().isoformat()
+                "created_at": _serialize_firestore_value(tx.get('created_at')) or datetime.datetime.now().isoformat()
             })
         
         # 4. Use load_table_from_json for batch insert (not streaming)

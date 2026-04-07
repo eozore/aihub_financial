@@ -46,6 +46,7 @@ export default function Home() {
   }, [user, startMonth, endMonth, ownerFilter, typeFilter]);
 
   const fetchDashboard = async () => {
+    const effectiveEnd = endMonth < startMonth ? startMonth : endMonth;
     setLoadingData(true);
     try {
       const filters: TransactionFilters = {};
@@ -53,8 +54,8 @@ export default function Home() {
       if (typeFilter) filters.txType = typeFilter;
 
       const [dashResult, trendResult] = await Promise.all([
-        getDashboardSummary(startMonth, endMonth, filters),
-        getTrendData(startMonth, endMonth, filters)
+        getDashboardSummary(startMonth, effectiveEnd, filters),
+        getTrendData(startMonth, effectiveEnd, filters)
       ]);
       setData(dashResult);
       setTrendData(trendResult);

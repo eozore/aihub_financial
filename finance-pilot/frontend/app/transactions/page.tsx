@@ -50,6 +50,18 @@ interface Transaction {
     month_ref?: string;
 }
 
+interface PendingUpdate {
+    id: string;
+    data: {
+        date: string;
+        amount: number;
+        merchant_clean: string;
+        category: string;
+        owner: string;
+        type: string;
+    };
+}
+
 export default function TransactionsPage() {
     const { user, loading } = useAuth();
     const router = useRouter();
@@ -77,6 +89,10 @@ export default function TransactionsPage() {
     // Edit state
     const [editingId, setEditingId] = useState<string | null>(null);
     const [editForm, setEditForm] = useState<EditFormData>(emptyForm);
+    const [isBatchEditMode, setIsBatchEditMode] = useState(false);
+    const [draftsById, setDraftsById] = useState<Record<string, EditFormData>>({});
+    const [savingBatch, setSavingBatch] = useState(false);
+    const [batchMessage, setBatchMessage] = useState<string>('');
 
     // Create modal state
     const [showCreateModal, setShowCreateModal] = useState(false);
@@ -95,8 +111,8 @@ export default function TransactionsPage() {
 
             // Handle numeric sorting for amount
             if (sortField === 'amount') {
-                aVal = parseFloat(aVal) || 0;
-                bVal = parseFloat(bVal) || 0;
+                aVal = Number(aVal) || 0;
+                bVal = Number(bVal) || 0;
             } else {
                 // String comparison
                 aVal = (aVal || '').toString().toLowerCase();
@@ -155,16 +171,18 @@ export default function TransactionsPage() {
 
     const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
+    const toEditForm = (tx: Transaction): EditFormData => ({
+        date: tx.date,
+        amount: tx.amount?.toString() || '',
+        merchant_clean: tx.merchant_clean || '',
+        category: tx.category || 'Outro',
+        owner: tx.owner || owners[0] || '',
+        type: tx.type || 'Shared'
+    });
+
     const handleEditClick = (tx: Transaction) => {
         setEditingId(tx.id);
-        setEditForm({
-            date: tx.date,
-            amount: tx.amount?.toString() || '',
-            merchant_clean: tx.merchant_clean || '',
-            category: tx.category || 'Outro',
-            owner: tx.owner || owners[0] || '',
-            type: tx.type || 'Shared'
-        });
+        setEditForm(toEditForm(tx));
     };
 
     const handleSave = async (id: string) => {
@@ -216,6 +234,104 @@ export default function TransactionsPage() {
         setEditingId(null);
     };
 
+    const startBatchEdit = () => {
+        const nextDrafts: Record<string, EditFormData> = {};
+        for (const tx of transactions) {
+            nextDrafts[tx.id] = toEditForm(tx);
+        }
+        setDraftsById(nextDrafts);
+        setIsBatchEditMode(true);
+        setEditingId(null);
+        setBatchMessage('');
+    };
+
+    const cancelBatchEdit = () => {
+        setIsBatchEditMode(false);
+        setDraftsById({});
+        setBatchMessage('');
+    };
+
+    const updateDraftField = (id: string, field: keyof EditFormData, value: string) => {
+        setDraftsById(prev => ({
+            ...prev,
+            [id]: {
+                ...(prev[id] || emptyForm),
+                [field]: value
+            }
+        }));
+    };
+
+    const buildPendingUpdates = (): PendingUpdate[] => {
+        const updates: PendingUpdate[] = [];
+
+        for (const tx of transactions) {
+            const draft = draftsById[tx.id];
+            if (!draft) continue;
+
+            const parsedAmount = Number(draft.amount);
+            const normalizedMerchant = draft.merchant_clean.trim();
+            if (!Number.isFinite(parsedAmount) || !normalizedMerchant) continue;
+
+            const changed =
+                tx.date !== draft.date ||
+                tx.amount !== parsedAmount ||
+                tx.merchant_clean !== normalizedMerchant ||
+                tx.category !== draft.category ||
+                tx.owner !== draft.owner ||
+                tx.type !== draft.type;
+
+            if (!changed) continue;
+
+            updates.push({
+                id: tx.id,
+                data: {
+                    date: draft.date,
+                    amount: parsedAmount,
+                    merchant_clean: normalizedMerchant,
+                    category: draft.category,
+                    owner: draft.owner,
+                    type: draft.type
+                }
+            });
+        }
+
+        return updates;
+    };
+
+    const pendingChanges = useMemo(() => buildPendingUpdates().length, [draftsById, transactions]);
+
+    const saveBatchEdits = async () => {
+        const updates = buildPendingUpdates();
+        if (updates.length === 0) {
+            setBatchMessage('Nenhuma alteração para salvar.');
+            return;
+        }
+
+        setSavingBatch(true);
+        setBatchMessage('');
+        try {
+            const results = await Promise.allSettled(
+                updates.map((item) => updateTransaction(item.id, item.data))
+            );
+            const failed = results.filter(result => result.status === 'rejected').length;
+
+            if (failed > 0) {
+                setBatchMessage(`${failed} transação(ões) falharam ao salvar. Ajuste e tente novamente.`);
+                return;
+            }
+
+            setBatchMessage(`${updates.length} transação(ões) salvas com sucesso.`);
+            setIsBatchEditMode(false);
+            setDraftsById({});
+            await fetchTransactions();
+        } catch (error) {
+            console.error('Failed to save batch updates', error);
+            setBatchMessage('Falha ao salvar alterações em lote.');
+        } finally {
+            setSavingBatch(false);
+        }
+    };
+
     if (loading || !user) return null;
 
     return (
@@ -238,6 +354,7 @@ export default function TransactionsPage() {
                                     type="month"
                                     value={startMonth}
                                     onChange={(e) => setStartMonth(e.target.value)}
+                                    disabled={isBatchEditMode}
                                     className="input py-1.5 px-2 text-sm w-full sm:w-36"
                                 />
                             </div>
@@ -249,6 +366,7 @@ export default function TransactionsPage() {
                                     value={endMonth}
                                     min={startMonth}
                                     onChange={(e) => setEndMonth(e.target.value)}
+                                    disabled={isBatchEditMode}
                                     className="input py-1.5 px-2 text-sm w-full sm:w-36"
                                 />
                             </div>
@@ -269,6 +387,7 @@ export default function TransactionsPage() {
                             <select
                                 value={ownerFilter}
                                 onChange={(e) => setOwnerFilter(e.target.value)}
+                                disabled={isBatchEditMode}
                                 className="appearance-none bg-[var(--color-bg-primary)] border-none text-[var(--color-text-primary)] text-sm font-medium py-2 pl-3 pr-8 rounded-lg cursor-pointer hover:bg-[var(--color-bg-accent)] transition-colors focus:ring-2 focus:ring-[var(--color-brand-primary)]"
                             >
                                 <option value="">Todas Pessoas</option>
@@ -286,6 +405,7 @@ export default function TransactionsPage() {
                             <select
                                 value={typeFilter}
                                 onChange={(e) => setTypeFilter(e.target.value)}
+                                disabled={isBatchEditMode}
                                 className="appearance-none bg-[var(--color-bg-primary)] border-none text-[var(--color-text-primary)] text-sm font-medium py-2 pl-3 pr-8 rounded-lg cursor-pointer hover:bg-[var(--color-bg-accent)] transition-colors focus:ring-2 focus:ring-[var(--color-brand-primary)]"
                             >
                                 <option value="">Todos Tipos</option>
@@ -307,18 +427,64 @@ export default function TransactionsPage() {
                         )}
                     </div>
 
-                    {/* Add Transaction Button */}
-                    <button
-                        onClick={() => {
-                            setCreateForm({ ...emptyForm, owner: owners[0] || '' });
-                            setShowCreateModal(true);
-                        }}
-                        className="btn btn-primary w-full md:w-auto"
-                    >
-                        <Plus className="w-4 h-4" />
-                        Nova Transação
-                    </button>
+                    <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+                        {isBatchEditMode ? (
+                            <>
+                                <button
+                                    onClick={saveBatchEdits}
+                                    disabled={savingBatch}
+                                    className="btn btn-primary w-full md:w-auto"
+                                >
+                                    {savingBatch ? (
+                                        <>
+                                            <Loader className="w-4 h-4 animate-spin" />
+                                            Salvando...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Check className="w-4 h-4" />
+                                            Salvar Tudo ({pendingChanges})
+                                        </>
+                                    )}
+                                </button>
+                                <button
+                                    onClick={cancelBatchEdit}
+                                    disabled={savingBatch}
+                                    className="btn btn-ghost w-full md:w-auto border border-[var(--border-color)]"
+                                >
+                                    <X className="w-4 h-4" />
+                                    Cancelar
+                                </button>
+                            </>
+                        ) : (
+                            <>
+                                <button
+                                    onClick={startBatchEdit}
+                                    className="btn btn-ghost w-full md:w-auto border border-[var(--border-color)]"
+                                >
+                                    <Edit2 className="w-4 h-4" />
+                                    Modo Editar
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        setCreateForm({ ...emptyForm, owner: owners[0] || '' });
+                                        setShowCreateModal(true);
+                                    }}
+                                    className="btn btn-primary w-full md:w-auto"
+                                >
+                                    <Plus className="w-4 h-4" />
+                                    Nova Transação
+                                </button>
+                            </>
+                        )}
+                    </div>
                 </div>
+
+                {batchMessage && (
+                    <div className="bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-xl px-4 py-3 text-sm text-[var(--text-secondary)]">
+                        {batchMessage}
+                    </div>
+                )}
             </div>
 
             {loadingData ? (
@@ -382,209 +548,348 @@ export default function TransactionsPage() {
                                 </tr>
                             </thead>
                             <tbody>
-                                {sortedTransactions.map((tx, index) => (
-                                    <tr
-                                        key={tx.id}
-                                        className={clsx(
-                                            "border-b border-[var(--border-color)] hover:bg-[var(--bg-primary)] transition-colors",
-                                            index % 2 === 0 ? "bg-white" : "bg-[var(--bg-primary)]/50"
-                                        )}
-                                    >
-                                        <td className="py-3 px-4 text-sm font-mono">
-                                            {editingId === tx.id ? (
-                                                <input
-                                                    type="date"
-                                                    value={editForm.date}
-                                                    onChange={(e) => setEditForm({ ...editForm, date: e.target.value })}
-                                                    className="input py-1 px-2 text-sm w-32"
-                                                />
-                                            ) : (
-                                                <span className="text-[var(--text-secondary)]">{tx.date}</span>
+                                {sortedTransactions.map((tx, index) => {
+                                    const isSingleRowEditing = editingId === tx.id;
+                                    const isRowEditing = isBatchEditMode || isSingleRowEditing;
+                                    const rowForm = isBatchEditMode
+                                        ? (draftsById[tx.id] || toEditForm(tx))
+                                        : editForm;
+
+                                    return (
+                                        <tr
+                                            key={tx.id}
+                                            className={clsx(
+                                                "border-b border-[var(--border-color)] hover:bg-[var(--bg-primary)] transition-colors",
+                                                index % 2 === 0 ? "bg-white" : "bg-[var(--bg-primary)]/50"
                                             )}
-                                        </td>
-                                        <td className="py-3 px-4">
-                                            {editingId === tx.id ? (
-                                                <input
-                                                    type="text"
-                                                    value={editForm.merchant_clean}
-                                                    onChange={(e) => setEditForm({ ...editForm, merchant_clean: e.target.value })}
-                                                    className="input py-1 px-2 text-sm w-full max-w-[200px]"
-                                                />
-                                            ) : (
-                                                <p className="text-sm font-medium text-[var(--text-primary)] truncate max-w-[200px]">
-                                                    {tx.merchant_clean}
-                                                </p>
-                                            )}
-                                        </td>
-                                        <td className="py-3 px-4">
-                                            {editingId === tx.id ? (
-                                                <select
-                                                    value={editForm.owner}
-                                                    onChange={(e) => setEditForm({ ...editForm, owner: e.target.value })}
-                                                    className="input py-1 px-2 text-sm w-24"
-                                                >
-                                                    {owners.map(o => (
-                                                        <option key={o} value={o}>{o}</option>
-                                                    ))}
-                                                </select>
-                                            ) : (
-                                                <span className={clsx(
-                                                    "inline-flex items-center px-2 py-1 rounded-full text-xs font-medium",
-                                                    owners.indexOf(tx.owner) === 0
-                                                        ? "bg-blue-100 text-blue-700"
-                                                        : "bg-pink-100 text-pink-700"
-                                                )}>
-                                                    {tx.owner}
-                                                </span>
-                                            )}
-                                        </td>
-                                        <td className="py-3 px-4 text-right">
-                                            {editingId === tx.id ? (
-                                                <input
-                                                    type="number"
-                                                    value={editForm.amount}
-                                                    onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })}
-                                                    className="input py-1 px-2 text-sm w-24 text-right"
-                                                    step="0.01"
-                                                />
-                                            ) : (
-                                                <span className="text-sm font-semibold text-[var(--text-primary)]">
-                                                    R$ {tx.amount?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                                                </span>
-                                            )}
-                                        </td>
-                                        <td className="py-3 px-4">
-                                            {editingId === tx.id ? (
-                                                <select
-                                                    value={editForm.category}
-                                                    onChange={(e) => setEditForm({ ...editForm, category: e.target.value })}
-                                                    className="input py-1 px-2 text-sm w-32"
-                                                >
-                                                    {CATEGORIES.map(cat => (
-                                                        <option key={cat} value={cat}>{cat}</option>
-                                                    ))}
-                                                </select>
-                                            ) : (
-                                                <span className="text-sm text-[var(--text-primary)]">{tx.category}</span>
-                                            )}
-                                        </td>
-                                        <td className="py-3 px-4">
-                                            {editingId === tx.id ? (
-                                                <select
-                                                    value={editForm.type}
-                                                    onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}
-                                                    className="input py-1 px-2 text-sm w-28"
-                                                >
-                                                    {TYPES.map(type => (
-                                                        <option key={type} value={type}>{type}</option>
-                                                    ))}
-                                                </select>
-                                            ) : (
-                                                <span className={clsx(
-                                                    "inline-flex items-center px-2 py-1 rounded-full text-xs font-medium",
-                                                    tx.type === 'Shared'
-                                                        ? "bg-indigo-100 text-indigo-700"
-                                                        : "bg-gray-100 text-gray-600"
-                                                )}>
-                                                    {tx.type === 'Shared' ? 'Compartilhado' : 'Individual'}
-                                                </span>
-                                            )}
-                                        </td>
-                                        <td className="py-3 px-4 text-center">
-                                            {editingId === tx.id ? (
-                                                <div className="flex items-center justify-center gap-1">
-                                                    <button
-                                                        onClick={() => handleSave(tx.id)}
-                                                        className="p-1.5 hover:bg-green-100 rounded-lg text-green-600 transition-colors"
-                                                        title="Salvar"
+                                        >
+                                            <td className="py-3 px-4 text-sm font-mono">
+                                                {isRowEditing ? (
+                                                    <input
+                                                        type="date"
+                                                        value={rowForm.date}
+                                                        onChange={(e) => (
+                                                            isBatchEditMode
+                                                                ? updateDraftField(tx.id, 'date', e.target.value)
+                                                                : setEditForm({ ...editForm, date: e.target.value })
+                                                        )}
+                                                        className="input py-1 px-2 text-sm w-32"
+                                                    />
+                                                ) : (
+                                                    <span className="text-[var(--text-secondary)]">{tx.date}</span>
+                                                )}
+                                            </td>
+                                            <td className="py-3 px-4">
+                                                {isRowEditing ? (
+                                                    <input
+                                                        type="text"
+                                                        value={rowForm.merchant_clean}
+                                                        onChange={(e) => (
+                                                            isBatchEditMode
+                                                                ? updateDraftField(tx.id, 'merchant_clean', e.target.value)
+                                                                : setEditForm({ ...editForm, merchant_clean: e.target.value })
+                                                        )}
+                                                        className="input py-1 px-2 text-sm w-full max-w-[200px]"
+                                                    />
+                                                ) : (
+                                                    <p className="text-sm font-medium text-[var(--text-primary)] truncate max-w-[200px]">
+                                                        {tx.merchant_clean}
+                                                    </p>
+                                                )}
+                                            </td>
+                                            <td className="py-3 px-4">
+                                                {isRowEditing ? (
+                                                    <select
+                                                        value={rowForm.owner}
+                                                        onChange={(e) => (
+                                                            isBatchEditMode
+                                                                ? updateDraftField(tx.id, 'owner', e.target.value)
+                                                                : setEditForm({ ...editForm, owner: e.target.value })
+                                                        )}
+                                                        className="input py-1 px-2 text-sm w-24"
                                                     >
-                                                        <Check className="w-4 h-4" />
-                                                    </button>
-                                                    <button
-                                                        onClick={handleCancel}
-                                                        className="p-1.5 hover:bg-red-100 rounded-lg text-red-500 transition-colors"
-                                                        title="Cancelar"
+                                                        {owners.map(o => (
+                                                            <option key={o} value={o}>{o}</option>
+                                                        ))}
+                                                    </select>
+                                                ) : (
+                                                    <span className={clsx(
+                                                        "inline-flex items-center px-2 py-1 rounded-full text-xs font-medium",
+                                                        owners.indexOf(tx.owner) === 0
+                                                            ? "bg-blue-100 text-blue-700"
+                                                            : "bg-pink-100 text-pink-700"
+                                                    )}>
+                                                        {tx.owner}
+                                                    </span>
+                                                )}
+                                            </td>
+                                            <td className="py-3 px-4 text-right">
+                                                {isRowEditing ? (
+                                                    <input
+                                                        type="number"
+                                                        value={rowForm.amount}
+                                                        onChange={(e) => (
+                                                            isBatchEditMode
+                                                                ? updateDraftField(tx.id, 'amount', e.target.value)
+                                                                : setEditForm({ ...editForm, amount: e.target.value })
+                                                        )}
+                                                        className="input py-1 px-2 text-sm w-24 text-right"
+                                                        step="0.01"
+                                                    />
+                                                ) : (
+                                                    <span className="text-sm font-semibold text-[var(--text-primary)]">
+                                                        R$ {tx.amount?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                                    </span>
+                                                )}
+                                            </td>
+                                            <td className="py-3 px-4">
+                                                {isRowEditing ? (
+                                                    <select
+                                                        value={rowForm.category}
+                                                        onChange={(e) => (
+                                                            isBatchEditMode
+                                                                ? updateDraftField(tx.id, 'category', e.target.value)
+                                                                : setEditForm({ ...editForm, category: e.target.value })
+                                                        )}
+                                                        className="input py-1 px-2 text-sm w-32"
                                                     >
-                                                        <X className="w-4 h-4" />
-                                                    </button>
-                                                </div>
-                                            ) : (
-                                                <div className="flex items-center justify-center gap-1">
-                                                    <button
-                                                        onClick={() => handleEditClick(tx)}
-                                                        className="p-1.5 hover:bg-[var(--bg-accent)] rounded-lg text-[var(--text-secondary)] transition-colors"
-                                                        title="Editar"
+                                                        {CATEGORIES.map(cat => (
+                                                            <option key={cat} value={cat}>{cat}</option>
+                                                        ))}
+                                                    </select>
+                                                ) : (
+                                                    <span className="text-sm text-[var(--text-primary)]">{tx.category}</span>
+                                                )}
+                                            </td>
+                                            <td className="py-3 px-4">
+                                                {isRowEditing ? (
+                                                    <select
+                                                        value={rowForm.type}
+                                                        onChange={(e) => (
+                                                            isBatchEditMode
+                                                                ? updateDraftField(tx.id, 'type', e.target.value)
+                                                                : setEditForm({ ...editForm, type: e.target.value })
+                                                        )}
+                                                        className="input py-1 px-2 text-sm w-28"
                                                     >
-                                                        <Edit2 className="w-4 h-4" />
-                                                    </button>
-                                                    <button
-                                                        onClick={() => handleDelete(tx.id)}
-                                                        className="p-1.5 hover:bg-red-100 rounded-lg text-red-400 transition-colors"
-                                                        title="Excluir"
-                                                    >
-                                                        <Trash2 className="w-4 h-4" />
-                                                    </button>
-                                                </div>
-                                            )}
-                                        </td>
-                                    </tr>
-                                ))}
+                                                        {TYPES.map(type => (
+                                                            <option key={type} value={type}>{type}</option>
+                                                        ))}
+                                                    </select>
+                                                ) : (
+                                                    <span className={clsx(
+                                                        "inline-flex items-center px-2 py-1 rounded-full text-xs font-medium",
+                                                        tx.type === 'Shared'
+                                                            ? "bg-indigo-100 text-indigo-700"
+                                                            : "bg-gray-100 text-gray-600"
+                                                    )}>
+                                                        {tx.type === 'Shared' ? 'Compartilhado' : 'Individual'}
+                                                    </span>
+                                                )}
+                                            </td>
+                                            <td className="py-3 px-4 text-center">
+                                                {isBatchEditMode ? (
+                                                    <span className="text-xs text-[var(--text-secondary)]">Em lote</span>
+                                                ) : isSingleRowEditing ? (
+                                                    <div className="flex items-center justify-center gap-1">
+                                                        <button
+                                                            onClick={() => handleSave(tx.id)}
+                                                            className="p-1.5 hover:bg-green-100 rounded-lg text-green-600 transition-colors"
+                                                            title="Salvar"
+                                                        >
+                                                            <Check className="w-4 h-4" />
+                                                        </button>
+                                                        <button
+                                                            onClick={handleCancel}
+                                                            className="p-1.5 hover:bg-red-100 rounded-lg text-red-500 transition-colors"
+                                                            title="Cancelar"
+                                                        >
+                                                            <X className="w-4 h-4" />
+                                                        </button>
+                                                    </div>
+                                                ) : (
+                                                    <div className="flex items-center justify-center gap-1">
+                                                        <button
+                                                            onClick={() => handleEditClick(tx)}
+                                                            className="p-1.5 hover:bg-[var(--bg-accent)] rounded-lg text-[var(--text-secondary)] transition-colors"
+                                                            title="Editar"
+                                                        >
+                                                            <Edit2 className="w-4 h-4" />
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handleDelete(tx.id)}
+                                                            className="p-1.5 hover:bg-red-100 rounded-lg text-red-400 transition-colors"
+                                                            title="Excluir"
+                                                        >
+                                                            <Trash2 className="w-4 h-4" />
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
                             </tbody>
                         </table>
                     </div>
 
                     {/* Mobile Cards */}
                     <div className="md:hidden space-y-3 animate-fade-in">
-                        {transactions.map((tx) => (
-                            <div key={tx.id} className="card p-4">
-                                <div className="flex items-start justify-between mb-3">
-                                    <div className="flex-1 min-w-0">
-                                        <p className="font-medium text-[var(--text-primary)] truncate">
-                                            {tx.merchant_clean}
-                                        </p>
-                                        <p className="text-xs text-[var(--text-secondary)] font-mono mt-0.5">
-                                            {tx.date}
-                                        </p>
-                                    </div>
-                                    <span className="text-lg font-bold text-[var(--text-primary)] ml-4">
-                                        R$ {tx.amount?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                                    </span>
-                                </div>
+                        {sortedTransactions.map((tx) => {
+                            const isSingleRowEditing = editingId === tx.id;
+                            const isRowEditing = isBatchEditMode || isSingleRowEditing;
+                            const rowForm = isBatchEditMode
+                                ? (draftsById[tx.id] || toEditForm(tx))
+                                : editForm;
 
-                                <div className="flex items-center gap-2 flex-wrap">
-                                    <span className={clsx(
-                                        "px-2 py-1 rounded-full text-xs font-medium",
-                                        owners.indexOf(tx.owner) === 0 ? "bg-blue-100 text-blue-700" : "bg-pink-100 text-pink-700"
-                                    )}>
-                                        {tx.owner}
-                                    </span>
-                                    <span className="px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
-                                        {tx.category}
-                                    </span>
-                                    <span className={clsx(
-                                        "px-2 py-1 rounded-full text-xs font-medium",
-                                        tx.type === 'Shared' ? "bg-indigo-100 text-indigo-700" : "bg-gray-100 text-gray-600"
-                                    )}>
-                                        {tx.type === 'Shared' ? 'Compartilhado' : 'Individual'}
-                                    </span>
+                            return (
+                                <div key={tx.id} className="card p-4">
+                                    {isRowEditing ? (
+                                        <div className="space-y-3">
+                                            <input
+                                                type="text"
+                                                value={rowForm.merchant_clean}
+                                                onChange={(e) => (
+                                                    isBatchEditMode
+                                                        ? updateDraftField(tx.id, 'merchant_clean', e.target.value)
+                                                        : setEditForm({ ...editForm, merchant_clean: e.target.value })
+                                                )}
+                                                className="input w-full"
+                                            />
+                                            <div className="grid grid-cols-2 gap-2">
+                                                <input
+                                                    type="date"
+                                                    value={rowForm.date}
+                                                    onChange={(e) => (
+                                                        isBatchEditMode
+                                                            ? updateDraftField(tx.id, 'date', e.target.value)
+                                                            : setEditForm({ ...editForm, date: e.target.value })
+                                                    )}
+                                                    className="input w-full"
+                                                />
+                                                <input
+                                                    type="number"
+                                                    value={rowForm.amount}
+                                                    onChange={(e) => (
+                                                        isBatchEditMode
+                                                            ? updateDraftField(tx.id, 'amount', e.target.value)
+                                                            : setEditForm({ ...editForm, amount: e.target.value })
+                                                    )}
+                                                    className="input w-full"
+                                                    step="0.01"
+                                                />
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-2">
+                                                <select
+                                                    value={rowForm.owner}
+                                                    onChange={(e) => (
+                                                        isBatchEditMode
+                                                            ? updateDraftField(tx.id, 'owner', e.target.value)
+                                                            : setEditForm({ ...editForm, owner: e.target.value })
+                                                    )}
+                                                    className="input w-full"
+                                                >
+                                                    {owners.map(o => (
+                                                        <option key={o} value={o}>{o}</option>
+                                                    ))}
+                                                </select>
+                                                <select
+                                                    value={rowForm.type}
+                                                    onChange={(e) => (
+                                                        isBatchEditMode
+                                                            ? updateDraftField(tx.id, 'type', e.target.value)
+                                                            : setEditForm({ ...editForm, type: e.target.value })
+                                                    )}
+                                                    className="input w-full"
+                                                >
+                                                    {TYPES.map(type => (
+                                                        <option key={type} value={type}>{type}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                            <select
+                                                value={rowForm.category}
+                                                onChange={(e) => (
+                                                    isBatchEditMode
+                                                        ? updateDraftField(tx.id, 'category', e.target.value)
+                                                        : setEditForm({ ...editForm, category: e.target.value })
+                                                )}
+                                                className="input w-full"
+                                            >
+                                                {CATEGORIES.map(cat => (
+                                                    <option key={cat} value={cat}>{cat}</option>
+                                                ))}
+                                            </select>
+                                            {!isBatchEditMode && (
+                                                <div className="flex justify-end gap-2">
+                                                    <button
+                                                        onClick={() => handleSave(tx.id)}
+                                                        className="btn btn-primary"
+                                                    >
+                                                        Salvar
+                                                    </button>
+                                                    <button
+                                                        onClick={handleCancel}
+                                                        className="btn btn-ghost border border-[var(--border-color)]"
+                                                    >
+                                                        Cancelar
+                                                    </button>
+                                                </div>
+                                            )}
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <div className="flex items-start justify-between mb-3">
+                                                <div className="flex-1 min-w-0">
+                                                    <p className="font-medium text-[var(--text-primary)] truncate">
+                                                        {tx.merchant_clean}
+                                                    </p>
+                                                    <p className="text-xs text-[var(--text-secondary)] font-mono mt-0.5">
+                                                        {tx.date}
+                                                    </p>
+                                                </div>
+                                                <span className="text-lg font-bold text-[var(--text-primary)] ml-4">
+                                                    R$ {tx.amount?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                                </span>
+                                            </div>
 
-                                    <div className="ml-auto flex gap-1">
-                                        <button
-                                            onClick={() => handleEditClick(tx)}
-                                            className="p-1.5 hover:bg-[var(--bg-accent)] rounded-lg text-[var(--text-secondary)]"
-                                        >
-                                            <Edit2 className="w-4 h-4" />
-                                        </button>
-                                        <button
-                                            onClick={() => handleDelete(tx.id)}
-                                            className="p-1.5 hover:bg-red-100 rounded-lg text-red-400"
-                                        >
-                                            <Trash2 className="w-4 h-4" />
-                                        </button>
-                                    </div>
+                                            <div className="flex items-center gap-2 flex-wrap">
+                                                <span className={clsx(
+                                                    "px-2 py-1 rounded-full text-xs font-medium",
+                                                    owners.indexOf(tx.owner) === 0 ? "bg-blue-100 text-blue-700" : "bg-pink-100 text-pink-700"
+                                                )}>
+                                                    {tx.owner}
+                                                </span>
+                                                <span className="px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
+                                                    {tx.category}
+                                                </span>
+                                                <span className={clsx(
+                                                    "px-2 py-1 rounded-full text-xs font-medium",
+                                                    tx.type === 'Shared' ? "bg-indigo-100 text-indigo-700" : "bg-gray-100 text-gray-600"
+                                                )}>
+                                                    {tx.type === 'Shared' ? 'Compartilhado' : 'Individual'}
+                                                </span>
+
+                                                <div className="ml-auto flex gap-1">
+                                                    <button
+                                                        onClick={() => handleEditClick(tx)}
+                                                        className="p-1.5 hover:bg-[var(--bg-accent)] rounded-lg text-[var(--text-secondary)]"
+                                                    >
+                                                        <Edit2 className="w-4 h-4" />
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleDelete(tx.id)}
+                                                        className="p-1.5 hover:bg-red-100 rounded-lg text-red-400"
+                                                    >
+                                                        <Trash2 className="w-4 h-4" />
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </>
+                                    )}
                                 </div>
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 </>
             )}
@@ -598,14 +903,14 @@ export default function TransactionsPage() {
                     <div className="flex gap-2">
                         <button
                             onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
-                            disabled={currentPage === 0}
+                            disabled={currentPage === 0 || isBatchEditMode}
                             className="btn btn-ghost text-sm px-3 py-1.5 border border-[var(--border-color)] disabled:opacity-40"
                         >
                             Anterior
                         </button>
                         <button
                             onClick={() => setCurrentPage(p => Math.min(totalPages - 1, p + 1))}
-                            disabled={currentPage >= totalPages - 1}
+                            disabled={currentPage >= totalPages - 1 || isBatchEditMode}
                             className="btn btn-ghost text-sm px-3 py-1.5 border border-[var(--border-color)] disabled:opacity-40"
                         >
                             Próxima

@@ -1,0 +1,30 @@
+# Ignore git metadata
+.git/
+.gitignore
+
+# Python caches and venvs
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Env files
+.env
+.env.*
+
+# Local data / databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Test and tooling caches
+.pytest_cache/
+.mypy_cache/
+.coverage
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/

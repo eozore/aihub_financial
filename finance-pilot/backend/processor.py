@@ -8,7 +8,6 @@ import logging
 from pathlib import Path
 
 from classification_service import ClassificationService
-from type_model import load_model, predict_types
 
 logger = logging.getLogger("finance-pilot")
 
@@ -41,7 +40,6 @@ class TransactionProcessor:
             self.db = firestore.Client(project=PROJECT_ID)
 
         self.classification_svc = ClassificationService()
-        self.type_model = load_model()
 
     def _day_name_pt(self, date_value) -> str:
         try:
@@ -113,12 +111,13 @@ class TransactionProcessor:
             rec_id_full = f"{rec_id}-{new_date.isoformat().replace('-', '')}"
 
             merchant_raw = str(row[merch_col])
-            merchant_clean = merchant_raw.strip()
 
             # Use unified classification service for normalization
             classification = self.classification_svc.classify(
                 merchant_raw, amount=amount, owner=owner
             )
+
+            merchant_clean = classification["merchant_norm"]
 
             rows.append({
                 "id": rec_id_full,
@@ -185,7 +184,7 @@ class TransactionProcessor:
 
             if not processed_rows:
                 logger.warning("No valid rows found in file: %s", filename)
-                return 0
+                return {"count": 0, "gold_rows": []}
 
             # 2. Enrich with type inference
             df_proc = pd.DataFrame(processed_rows)
@@ -202,44 +201,30 @@ class TransactionProcessor:
                 )
                 df_proc.at[idx, "type"] = classification["type"]
 
-            # 3. Aggregate to Gold (group by merchant+category+owner+type)
-            final_group_cols = ["tenant_id", "merchant_clean", "category", "owner", "type"]
-            df_final = (
-                df_proc
-                .groupby(final_group_cols, as_index=False, dropna=False)
-                .agg({"amount": "sum", "date": "min"})
-            )
-
-            # Build gold rows
+            # 3. Build gold rows directly from individual transactions (no aggregation)
             gold_rows = []
-            for _, row_agg in df_final.iterrows():
-                rec_id = self.generate_id({
-                    "tenant_id": row_agg["tenant_id"],
-                    "date": row_agg["date"],
-                    "amount": row_agg["amount"],
-                    "merchant_raw": row_agg["merchant_clean"],
-                    "owner": row_agg["owner"],
-                }, 0)
-                rec_id_full = f"{rec_id}-{str(row_agg['date']).replace('-', '')}"
+            for _, row_ind in df_proc.iterrows():
                 gold_rows.append({
-                    "id": rec_id_full,
-                    "date": row_agg["date"],
+                    "id": row_ind["id"],
+                    "date": row_ind["date"],
                     "month_ref": month_ref,
-                    "amount": row_agg["amount"],
-                    "merchant_clean": row_agg["merchant_clean"],
-                    "category": row_agg["category"],
-                    "subcategory": None,
-                    "type": row_agg["type"],
-                    "owner": row_agg["owner"],
-                    "tenant_id": row_agg["tenant_id"],
+                    "amount": row_ind["amount"],
+                    "merchant_clean": row_ind["merchant_clean"],
+                    "category": row_ind["category"],
+                    "subcategory": row_ind.get("subcategory"),
+                    "type": row_ind["type"],
+                    "owner": row_ind["owner"],
+                    "tenant_id": row_ind["tenant_id"],
                     "created_at": datetime.datetime.now().isoformat(),
                 })
 
             # 4. Insert to database
             if self.use_sqlite:
-                return self._insert_sqlite(gold_rows)
+                inserted_count = self._insert_sqlite(gold_rows)
             else:
-                return self._insert_bigquery(processed_rows, gold_rows)
+                inserted_count = self._insert_bigquery(processed_rows, gold_rows)
+
+            return {"count": inserted_count, "gold_rows": gold_rows}
 
         except Exception as e:
             logger.error("Error processing file %s: %s", filename, e)
@@ -271,32 +256,89 @@ class TransactionProcessor:
         logger.info("Inserted %d rows into SQLite", inserted)
         return inserted
 
-    def _insert_bigquery(self, silver_rows, gold_rows):
-        """Insert rows into BigQuery (cloud mode)."""
+    def _sanitize_bq_value(self, value):
+        if value is None:
+            return None
+
+        if isinstance(value, (datetime.date, datetime.datetime)):
+            return value.isoformat()
+
+        if hasattr(value, "item"):
+            try:
+                value = value.item()
+            except Exception:
+                pass
+
+        if isinstance(value, str) and value.strip().lower() == "nan":
+            return None
+
+        try:
+            if pd.isna(value):
+                return None
+        except Exception:
+            pass
+
+        return value
+
+    def _sanitize_bq_row(self, row: dict) -> dict:
+        return {key: self._sanitize_bq_value(value) for key, value in row.items()}
+
+    def _append_bigquery_rows(self, table_id: str, rows: list[dict], label: str):
         from google.cloud import bigquery
 
-        silver_data = [{
-            "id": r['id'], "date": r['date'], "month_ref": r['month_ref'],
-            "amount": r['amount'], "merchant_raw": r['merchant_raw'],
-            "merchant_clean": r['merchant_clean'], "owner": r['owner'],
-            "tenant_id": r['tenant_id'], "source_file": r['source_file'],
-            "created_at": r['created_at']
-        } for r in silver_rows]
+        if not rows:
+            return
 
-        errors = self.bq_client.insert_rows_json(TABLE_SILVER, silver_data)
-        if errors:
-            logger.error("BQ Silver Errors: %s", errors)
+        try:
+            errors = self.bq_client.insert_rows_json(table_id, rows)
+            if errors:
+                raise RuntimeError(f"BQ {label} Errors: {errors}")
+        except Exception as exc:
+            message = str(exc).lower()
+            if "table is truncated" not in message:
+                raise
 
-        gold_data = [{
-            "id": r['id'], "date": r['date'], "month_ref": r['month_ref'],
-            "amount": r['amount'], "merchant_clean": r['merchant_clean'],
-            "category": r['category'], "subcategory": r['subcategory'],
-            "type": r['type'], "owner": r['owner'],
-            "tenant_id": r['tenant_id'], "created_at": r['created_at']
-        } for r in gold_rows]
+            logger.warning(
+                "BQ streaming insert blocked for %s (%s). Falling back to load job.",
+                label,
+                table_id,
+            )
+            load_job = self.bq_client.load_table_from_json(
+                rows,
+                table_id,
+                job_config=bigquery.LoadJobConfig(
+                    write_disposition=bigquery.WriteDisposition.WRITE_APPEND
+                ),
+            )
+            load_job.result()
+            logger.info("BQ fallback load job completed for %s", label)
 
-        errors_gold = self.bq_client.insert_rows_json(TABLE_GOLD, gold_data)
-        if errors_gold:
-            logger.error("BQ Gold Errors: %s", errors_gold)
+    def _insert_bigquery(self, silver_rows, gold_rows):
+        """Insert rows into BigQuery (cloud mode)."""
+        silver_data = [
+            self._sanitize_bq_row({
+                "id": r['id'], "date": r['date'], "month_ref": r['month_ref'],
+                "amount": r['amount'], "merchant_raw": r['merchant_raw'],
+                "merchant_clean": r['merchant_clean'], "owner": r['owner'],
+                "tenant_id": r['tenant_id'], "source_file": r['source_file'],
+                "created_at": r['created_at']
+            })
+            for r in silver_rows
+        ]
+
+        self._append_bigquery_rows(TABLE_SILVER, silver_data, "silver")
+
+        gold_data = [
+            self._sanitize_bq_row({
+                "id": r['id'], "date": r['date'], "month_ref": r['month_ref'],
+                "amount": r['amount'], "merchant_clean": r['merchant_clean'],
+                "category": r['category'], "subcategory": r['subcategory'],
+                "type": r['type'], "owner": r['owner'],
+                "tenant_id": r['tenant_id'], "created_at": r['created_at']
+            })
+            for r in gold_rows
+        ]
+
+        self._append_bigquery_rows(TABLE_GOLD, gold_data, "gold")
 
         return len(gold_data)

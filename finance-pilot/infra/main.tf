@@ -54,24 +54,6 @@ resource "google_storage_bucket" "finance_raw" {
   }
 }
 
-# Processed data / internal bucket (if needed for temp files)
-resource "google_storage_bucket" "finance_internal" {
-  name          = "${var.project_id}-internal"
-  location      = var.region
-  force_destroy = false
-  uniform_bucket_level_access = true
-  depends_on = [google_project_service.enabled_services]
-
-  lifecycle_rule {
-    condition {
-      age = 30
-    }
-    action {
-      type = "Delete"
-    }
-  }
-}
-
 
 # --- 2. Firestore (Native Mode) ---
 # Note: Firestore database creation often requires App Engine enablement or specific handling.
@@ -155,9 +137,9 @@ EOF
 }
 
 # Gold Table: Enriched Data
-resource "google_bigquery_table" "finance_gold" {
+resource "google_bigquery_table" "transactions_gold" {
   dataset_id = google_bigquery_dataset.finance_analytics.dataset_id
-  table_id   = "finance_gold"
+  table_id   = "transactions_gold"
 
   schema = <<EOF
 [
@@ -386,24 +368,4 @@ resource "google_monitoring_alert_policy" "backend_latency" {
 
   notification_channels = [google_monitoring_notification_channel.email.name]
   depends_on            = [google_project_service.enabled_services]
-}
-
-# --- 9. Firestore Scheduled Backup ---
-
-resource "google_storage_bucket" "firestore_backups" {
-  name          = "${var.project_id}-firestore-backups"
-  location      = var.region
-  force_destroy = false
-  uniform_bucket_level_access = true
-
-  lifecycle_rule {
-    condition {
-      age = 30
-    }
-    action {
-      type = "Delete"
-    }
-  }
-
-  depends_on = [google_project_service.enabled_services]
 }
