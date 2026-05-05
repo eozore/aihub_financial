@@ -6,6 +6,9 @@ data/backups/
 data/uploads/
 data/exports/
 
+# PDFs (contain personal financial data)
+data/*.pdf
+
 # Terraform local cache + state (may contain secrets)
 infra/.terraform/
 infra/terraform.tfstate

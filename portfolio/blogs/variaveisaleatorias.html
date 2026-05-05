@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Variáveis Aleatórias</title>
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --primary-color: #db4a2b;
+            --accent-color: #f59e0b;
+            --bg-color: #f8fafc;
+            --text-color: #1e293b;
+            --success-color: #10b981;
+            --error-color: #ef4444;
+        }
+
+        body {
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.8;
+            color: var(--text-color);
+            background-color: var(--bg-color);
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: #fff;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+        }
+
+        h1 { color: var(--primary-color); font-size: 2.5rem; margin-bottom: 10px; line-height: 1.2; }
+        h2 { color: var(--primary-color); border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; margin-top: 40px; }
+        h3 { color: #475569; margin-top: 30px; }
+
+        .subtitle { font-size: 1.2rem; color: #64748b; margin-bottom: 40px; font-weight: 300; }
+
+        .story-box {
+            background-color: #eff6ff;
+            border-left: 5px solid var(--primary-color);
+            padding: 20px;
+            border-radius: 0 8px 8px 0;
+            margin: 30px 0;
+            font-style: italic;
+        }
+
+        .highlight-box {
+            background-color: #fffbeb;
+            border: 1px solid #fcd34d;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+
+        .highlight-title { font-weight: bold; color: #92400e; display: block; margin-bottom: 5px; }
+
+        .complexity-box {
+            background-color: #f0fdf4;
+            border: 1px solid #86efac;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+
+        .complexity-title { font-weight: bold; color: #166534; display: block; margin-bottom: 8px; }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 25px 0;
+            font-size: 0.9em;
+            box-shadow: 0 0 20px rgba(0,0,0,0.05);
+        }
+
+        table thead tr { background-color: var(--primary-color); color: #fff; text-align: left; }
+        table th, table td { padding: 12px 15px; border: 1px solid #ddd; }
+        table tbody tr { border-bottom: 1px solid #ddd; }
+
+        .chart-container { position: relative; height: 400px; width: 100%; margin: 30px 0; }
+
+        .quiz-container { margin-top: 50px; border-top: 2px dashed #cbd5e1; padding-top: 30px; }
+        .question-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+        .question-text { font-weight: 600; margin-bottom: 15px; display: block; }
+        .options { display: flex; flex-direction: column; gap: 10px; }
+        .option-btn { padding: 10px 15px; border: 1px solid #cbd5e1; border-radius: 6px; background: white; cursor: pointer; text-align: left; transition: all 0.2s; }
+        .option-btn:hover { background-color: #f1f5f9; }
+        .option-btn.correct { background-color: #dcfce7; border-color: var(--success-color); color: #064e3b; }
+        .option-btn.incorrect { background-color: #fee2e2; border-color: var(--error-color); color: #7f1d1d; }
+        .feedback { margin-top: 10px; font-size: 0.9em; display: none; padding: 10px; border-radius: 6px; }
+        .feedback.show { display: block; }
+
+        .references { background-color: #f8fafc; padding: 20px; border-radius: 8px; margin-top: 40px; }
+
+        @media (max-width: 600px) {
+            .container { padding: 20px; }
+            h1 { font-size: 1.8rem; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <h1>Variáveis Aleatórias</h1>
+        <p class="subtitle">Da intuição à modelagem de risco em produção</p>
+        <p style="font-size:0.85rem; color:#94a3b8;">📚 Artigo 1 de 7 — Bloco: Fundação Estatística</p>
+        <p style="margin-top:10px;"><a href="https://www.youtube.com/@eozore" target="_blank" rel="noopener" style="color:#db4a2b; font-weight:600;">Ver no YouTube</a></p>
+    </header>
+
+    <section>
+        <div class="story-box">
+            <h3>🚚 O Dilema da Logística</h3>
+            <p>Ana trabalhava como analista júnior na <strong>FlashLog</strong>, uma startup de entregas rápidas em crise: clientes reclamavam que as entregas prometidas para "30 minutos" atrasavam sistematicamente. O diretor perguntou qual era o tempo médio de entrega, e Ana respondeu: <strong>28 minutos</strong>. O diretor ficou confuso — como, com média de 28, havia tantas reclamações?</p>
+        </div>
+    </section>
+
+    <section>
+        <h2>O Que é uma Variável Aleatória?</h2>
+        <p>No caso da Ana, o "Tempo de Entrega" é uma VA (chamemos de \(X\)) que pode assumir diversos valores dependendo do trânsito, do clima e do motoboy. O valor exato só é conhecido <em>depois</em> que a entrega acontece.</p>
+
+        <div class="highlight-box">
+            <span class="highlight-title">💡 Definição Prática</span>
+            Uma <strong>Variável Aleatória (VA)</strong> é uma função que mapeia os resultados de um experimento aleatório para números reais. Ela é a "tradutora" que converte caos em números quantificáveis.
+        </div>
+
+        <h3>Como escrevemos VAs na notação científica?</h3>
+        <p>Letras maiúsculas representam a VA (o fenômeno); letras minúsculas representam um valor específico que ela assume:</p>
+        <ul>
+            <li>\(X\) — a VA em si (o fenômeno, ainda incerto)</li>
+            <li>\(x_1 = 24\) — a primeira entrega demorou 24 minutos</li>
+            <li>\(x_i = 22\) — a i-ésima entrega demorou 22 minutos</li>
+        </ul>
+        <p>Essa notação aparece em todo paper, livro e código de ML — dominar a leitura dela é essencial para não se perder na literatura.</p>
+    </section>
+
+    <section>
+        <h2>Tipos de Variáveis</h2>
+
+        <h3>1. Variáveis Qualitativas (Categóricas)</h3>
+        <p>Descrevem qualidades ou categorias — não são inerentemente numéricas, mas precisam ser tratadas para análise.</p>
+        <ul>
+            <li><strong>Nominal:</strong> Categorias sem ordem natural. Ex: <em>Tipo de Veículo</em> (Moto, Bicicleta, Carro).</li>
+            <li><strong>Ordinal:</strong> Categorias com ordem implícita. Ex: <em>Avaliação do Cliente</em> (Ruim, Regular, Bom, Excelente).</li>
+        </ul>
+        <div class="highlight-box">
+            <span class="highlight-title">💡 Encoding</span>
+            Para um algoritmo processar variáveis qualitativas, precisamos convertê-las em números. Esse processo é chamado de <em>Encoding</em>. Ex: "Moto" → 1, "Bicicleta" → 0.
+        </div>
+
+        <h3>2. Variáveis Aleatórias Discretas</h3>
+        <p>Assumem valores contáveis (geralmente inteiros). Não existe "meia ocorrência".</p>
+        <ul>
+            <li><strong>Exemplo:</strong> Número de reclamações no SAC por dia (0, 1, 2, 3...).</li>
+        </ul>
+        <div class="highlight-box" style="background-color:#f0f9ff; border-color:#bae6fd;">
+            <strong>Métrica:</strong> Usamos a <strong>Função de Massa de Probabilidade (PMF)</strong>: \(P(X = x)\).
+        </div>
+
+        <h3>3. Variáveis Aleatórias Contínuas</h3>
+        <p>Podem assumir qualquer valor dentro de um intervalo — resultam de medições como tempo, peso ou temperatura.</p>
+        <ul>
+            <li><strong>Exemplo:</strong> O tempo de entrega da Ana (28.5 min, 29.123 min, 30.01 min...).</li>
+        </ul>
+        <div class="highlight-box" style="background-color:#f0f9ff; border-color:#bae6fd;">
+            <strong>Métrica:</strong> A probabilidade de um valor <em>exato</em> é zero. Usamos a <strong>Função Densidade de Probabilidade (PDF)</strong> para calcular a chance de o valor cair em um <em>intervalo</em> (área sob a curva).
+        </div>
+
+        <h3>Visualizando o Problema da Ana</h3>
+        <p>Ana coletou 1.000 entregas. Veja uma amostra dos dados:</p>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>ID Entrega</th>
+                    <th>Tempo (min)</th>
+                    <th>Veículo</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>#001</td><td>22.5</td><td>Moto</td><td>No Prazo</td></tr>
+                <tr><td>#002</td><td>45.0</td><td>Bike</td><td>Atrasado</td></tr>
+                <tr><td>#003</td><td>28.0</td><td>Moto</td><td>No Prazo</td></tr>
+            </tbody>
+        </table>
+
+        <p>Ao plotar a distribuição dos tempos, Ana obteve a curva abaixo — que revelou a verdade oculta pela média:</p>
+
+        <div class="chart-container">
+            <canvas id="distributionChart"></canvas>
+        </div>
+        <p><em>A linha vermelha tracejada marca o limite de 30 minutos prometido. Note a área da curva à direita — são as entregas atrasadas.</em></p>
+    </section>
+
+    <section>
+        <h2>A Solução do Problema</h2>
+        <p>Com média de 28 min e desvio padrão de <strong>5 minutos</strong>, Ana calculou que cerca de <strong>34% das entregas</strong> ultrapassavam os 30 minutos prometidos. A média era boa, mas a variabilidade era o problema real.</p>
+
+        <p><strong>Ações propostas:</strong></p>
+        <ol>
+            <li><strong>Reduzir a variância:</strong> otimizar rotas e melhorar o despacho para diminuir os picos de atraso.</li>
+            <li><strong>Ajustar a promessa:</strong> comunicar "35 a 40 minutos" até estabilizar o processo.</li>
+        </ol>
+
+        <p><strong>Resultado:</strong> As reclamações caíram drasticamente — a expectativa foi alinhada com a realidade probabilística da operação.</p>
+
+        <div class="complexity-box">
+            <span class="complexity-title">🔬 Indo Além: Modelagem de SLA com Quantis</span>
+            <p>Em vez de prometer um tempo fixo, empresas maduras definem SLAs baseados em quantis. Por exemplo: <em>"Garantimos entrega em até 38 minutos para 95% dos pedidos"</em>. Isso é o <strong>percentil 95</strong> da distribuição de \(X\).</p>
+            <p>Se \(X \sim \mathcal{N}(28, 5^2)\), o percentil 95 é:</p>
+            $$P_{95} = \mu + z_{0.95} \cdot \sigma = 28 + 1.645 \times 5 \approx 36.2 \text{ min}$$
+            <p>Esse número é o que vai para o contrato de nível de serviço — não a média. Esse é o pensamento probabilístico aplicado a negócio.</p>
+        </div>
+    </section>
+
+    <section>
+        <div class="highlight-box" style="border-color:#db4a2b; background-color:#eff6ff;">
+            <h3>📝 Resumo para Levar na Mochila</h3>
+            <ul>
+                <li><strong>Variável Aleatória</strong> mapeia eventos incertos em números.</li>
+                <li><strong>Qualitativas</strong> descrevem categorias (Nominal/Ordinal) e viram números via Encoding.</li>
+                <li><strong>Discretas</strong> são contagens (inteiros); <strong>Contínuas</strong> são medições (reais).</li>
+                <li>A <strong>Média</strong> conta parte da história; a <strong>Variância</strong> é onde vivem os riscos.</li>
+                <li>Em produção, use <strong>quantis</strong> para definir SLAs — não médias.</li>
+            </ul>
+        </div>
+    </section>
+
+    <section>
+        <div class="complexity-box" style="border-color:#bae6fd; background-color:#f0f9ff;">
+            <span class="complexity-title">➡️ O Que Vem a Seguir</span>
+            <p>Agora que você sabe o que é uma Variável Aleatória e como notá-la, o próximo passo é aprender a <strong>descrever e resumir</strong> seu comportamento numericamente. No <a href="estatisticasbasicas.html" target="_blank" rel="noopener">Artigo 2 — Estatísticas Básicas</a>, vamos aprofundar média, mediana, variância, desvio padrão e quartis — e mostrar por que o CEO de uma fintech tomou uma decisão errada por confiar apenas na média.</p>
+        </div>
+    </section>
+
+    <section class="references">
+        <h3>📚 Para Se Aprofundar</h3>
+        <ul>
+            <li><strong>"Estatística Básica"</strong> — Morettin & Bussab. (A bíblia brasileira da estatística.)</li>
+            <li><strong>"The Art of Statistics"</strong> — David Spiegelhalter. (Intuição sem excesso de matemática.)</li>
+            <li><strong>"Naked Statistics"</strong> — Charles Wheelan. (Leitura leve e aplicada.)</li>
+        </ul>
+    </section>
+
+    <section class="quiz-container">
+        <h2>🧠 Teste Seu Conhecimento</h2>
+        <p style="margin-bottom:20px;">Responda às perguntas abaixo para validar o que aprendeu.</p>
+        <div id="quiz-root"></div>
+    </section>
+</div>
+
+<script>
+    // --- Gráfico ---
+    const verticalLinePlugin = {
+        id: 'verticalLine',
+        afterDraw(chart) {
+            const ctx = chart.ctx;
+            const xAxis = chart.scales.x;
+            const yAxis = chart.scales.y;
+            const x = xAxis.getPixelForValue(30);
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(x, yAxis.top);
+            ctx.lineTo(x, yAxis.bottom);
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#ef4444';
+            ctx.setLineDash([5, 5]);
+            ctx.stroke();
+            ctx.fillStyle = '#ef4444';
+            ctx.font = '12px Segoe UI';
+            ctx.fillText('Limite 30 min', x + 5, yAxis.top + 20);
+            ctx.restore();
+        }
+    };
+
+    Chart.register(verticalLinePlugin);
+
+    const dataPoints = [];
+    for (let i = 10; i <= 50; i++) {
+        dataPoints.push({ x: i, y: (1 / (5 * Math.sqrt(2 * Math.PI))) * Math.exp(-0.5 * Math.pow((i - 28) / 5, 2)) });
+    }
+
+    new Chart(document.getElementById('distributionChart').getContext('2d'), {
+        type: 'line',
+        data: {
+            datasets: [{
+                label: 'Densidade de Probabilidade do Tempo de Entrega',
+                data: dataPoints,
+                borderColor: '#db4a2b',
+                backgroundColor: 'rgba(219, 74, 43, 0.15)',
+                fill: true,
+                tension: 0.4,
+                pointRadius: 0
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                tooltip: {
+                    callbacks: { title: ctx => 'Tempo: ' + ctx[0].parsed.x + ' min' }
+                }
+            },
+            scales: {
+                y: { display: false },
+                x: {
+                    type: 'linear',
+                    min: 10,
+                    max: 50,
+                    ticks: { stepSize: 5, callback: v => v },
+                    title: { display: true, text: 'Minutos' }
+                }
+            }
+        }
+    });
+
+    // --- Quiz ---
+    const questions = [
+        {
+            text: "O que define fundamentalmente uma Variável Aleatória?",
+            options: ["Um valor que nunca muda.", "Uma função que mapeia resultados de um evento incerto para números.", "Uma variável usada apenas em álgebra linear.", "O resultado de um erro no código Python.", "Um número escolhido pelo computador sem lógica."],
+            correct: 1,
+            feedback: "Correto! Uma VA traduz incertezas (como 'cara ou coroa') em números (0 ou 1)."
+        },
+        {
+            text: "Qual das opções abaixo é um exemplo de Variável Aleatória DISCRETA?",
+            options: ["O peso exato de um bife.", "A temperatura de uma sala.", "O tempo que leva para correr 1km.", "O número de gols em uma partida de futebol.", "A altura de uma pessoa."],
+            correct: 3,
+            feedback: "Exato! Gols são contáveis (0, 1, 2...). Não existe 1.5 gols."
+        },
+        {
+            text: "Qual das opções abaixo é um exemplo de Variável Qualitativa NOMINAL?",
+            options: ["Grau de escolaridade (Fundamental, Médio, Superior).", "Temperatura em Celsius.", "Bairro de residência.", "Número de filhos.", "Altura em centímetros."],
+            correct: 2,
+            feedback: "Isso! Bairros são categorias sem ordem matemática natural, diferente da escolaridade (ordinal)."
+        },
+        {
+            text: "O que representa o Valor Esperado E[X]?",
+            options: ["O valor máximo possível.", "O valor mínimo possível.", "A média ponderada dos valores possíveis (centro de gravidade).", "A diferença entre o maior e o menor valor.", "A probabilidade do evento acontecer."],
+            correct: 2,
+            feedback: "Isso mesmo. É a média de longo prazo se repetirmos o experimento muitas vezes."
+        },
+        {
+            text: "Se a média de entrega é 30 min, mas a variância é muito alta, o que isso significa?",
+            options: ["Que todas as entregas levam 30 min.", "Que o processo é muito estável.", "Que há grande incerteza; algumas entregas são rápidas, outras muito demoradas.", "Que a média está errada.", "Que o motoboy é rápido."],
+            correct: 2,
+            feedback: "Correto. Alta variância indica instabilidade — o pesadelo da logística."
+        },
+        {
+            text: "Qual função descreve a probabilidade em variáveis DISCRETAS?",
+            options: ["Função de Massa de Probabilidade (PMF).", "Função de Densidade de Probabilidade (PDF).", "Função Linear.", "Derivada.", "Integral."],
+            correct: 0,
+            feedback: "Certo! PMF é para 'Massas' pontuais (discretas), PDF é para 'Densidade' (contínuas)."
+        },
+        {
+            text: "Como um Cientista de Dados processa variáveis qualitativas em algoritmos?",
+            options: ["Ignora essas variáveis.", "Usa apenas texto puro.", "Transforma em números através de técnicas como Encoding.", "Calcula a média das palavras.", "Converte para imagens."],
+            correct: 2,
+            feedback: "Exato! Precisamos mapear qualidades para quantidades (ex: Moto=1, Bike=0)."
+        },
+        {
+            text: "No exemplo da Ana, por que a média sozinha não era suficiente?",
+            options: ["Porque a média era falsa.", "Porque ela não sabia calcular.", "Porque a média esconde os extremos e a variabilidade dos atrasos.", "Porque o chefe queria um número par.", "Porque a média só serve para vendas."],
+            correct: 2,
+            feedback: "Isso. Você pode se afogar em um rio com profundidade média de 50cm se houver um buraco de 3 metros."
+        },
+        {
+            text: "O que é o Desvio Padrão em relação à Variância?",
+            options: ["É o dobro da variância.", "É a variância ao quadrado.", "É a raiz quadrada da variância, trazendo a unidade de volta para a escala original.", "Não tem relação.", "É o inverso da variância."],
+            correct: 2,
+            feedback: "Correto! Se a Variância é em 'minutos²', o Desvio Padrão é em 'minutos' — mais fácil de interpretar."
+        },
+        {
+            text: "Em produção, qual métrica é mais adequada para definir um SLA de tempo de entrega?",
+            options: ["A média aritmética.", "A moda.", "Um quantil alto, como o percentil 95.", "O valor máximo histórico.", "A variância."],
+            correct: 2,
+            feedback: "Perfeito! O percentil 95 garante que 95% dos clientes sejam atendidos dentro do prazo — isso é pensar probabilisticamente."
+        }
+    ];
+
+    function renderQuiz() {
+        const root = document.getElementById('quiz-root');
+        questions.forEach((q, index) => {
+            const card = document.createElement('div');
+            card.className = 'question-card';
+
+            const title = document.createElement('span');
+            title.className = 'question-text';
+            title.innerText = `${index + 1}. ${q.text}`;
+            card.appendChild(title);
+
+            const optionsDiv = document.createElement('div');
+            optionsDiv.className = 'options';
+
+            const feedbackDiv = document.createElement('div');
+            feedbackDiv.className = 'feedback';
+
+            q.options.forEach((opt, i) => {
+                const btn = document.createElement('button');
+                btn.className = 'option-btn';
+                btn.innerText = opt;
+                btn.onclick = () => {
+                    optionsDiv.querySelectorAll('.option-btn').forEach(b => b.disabled = true);
+                    if (i === q.correct) {
+                        btn.classList.add('correct');
+                        feedbackDiv.innerText = "✅ " + q.feedback;
+                        feedbackDiv.style.backgroundColor = "#dcfce7";
+                        feedbackDiv.style.color = "#064e3b";
+                    } else {
+                        btn.classList.add('incorrect');
+                        optionsDiv.querySelectorAll('.option-btn')[q.correct].classList.add('correct');
+                        feedbackDiv.innerText = "❌ Incorreto. " + q.feedback;
+                        feedbackDiv.style.backgroundColor = "#fee2e2";
+                        feedbackDiv.style.color = "#7f1d1d";
+                    }
+                    feedbackDiv.classList.add('show');
+                };
+                optionsDiv.appendChild(btn);
+            });
+
+            card.appendChild(optionsDiv);
+            card.appendChild(feedbackDiv);
+            root.appendChild(card);
+        });
+    }
+
+    renderQuiz();
+</script>
+
+</body>
+</html>

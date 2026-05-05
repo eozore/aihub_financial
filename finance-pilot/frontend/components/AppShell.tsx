@@ -3,15 +3,15 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, FileText, UploadCloud, LogOut, Menu, X, Wallet, Settings2, Crown, PieChart } from 'lucide-react';
+import { LayoutDashboard, FileText, UploadCloud, LogOut, Menu, X, Wallet, Settings2, Crown, PieChart, UserCircle } from 'lucide-react';
 import { auth } from '../lib/firebase';
 import clsx from 'clsx';
 import { activateWorkspace, getMe, getWorkspaces, WorkspaceSummary } from '../services/api';
 
 const NAV_ITEMS = [
-    { name: 'Dashboard', icon: LayoutDashboard, href: '/' },
-    { name: 'Patrimônio', icon: PieChart, href: '/patrimonio' },
+    { name: 'Dashboard', icon: LayoutDashboard, href: '/dashboard' },
     { name: 'Transações', icon: FileText, href: '/transactions' },
+    { name: 'Patrimônio', icon: PieChart, href: '/patrimonio' },
     { name: 'Importar', icon: UploadCloud, href: '/upload' },
     { name: 'Painel', icon: Settings2, href: '/workspace' },
 ];
@@ -137,6 +137,19 @@ export default function AppShell({ children }: AppShellProps) {
                             <LogOut className="w-5 h-5" />
                             Sair
                         </button>
+                        <Link
+                            href="/profile"
+                            onClick={() => setMobileMenuOpen(false)}
+                            className={clsx(
+                                "flex items-center gap-3 px-6 py-3 text-sm font-medium transition-colors",
+                                pathname === '/profile'
+                                    ? "text-[var(--color-brand-primary)] bg-[var(--color-bg-accent)]"
+                                    : "text-[var(--color-text-secondary)] hover:bg-gray-50"
+                            )}
+                        >
+                            <UserCircle className="w-5 h-5" />
+                            Meu Perfil
+                        </Link>
                     </nav>
                 </div>
             )}
@@ -210,6 +223,18 @@ export default function AppShell({ children }: AppShellProps) {
 
                 {/* Footer */}
                 <div className="p-3 border-t border-[var(--color-border)] space-y-3">
+                    <Link
+                        href="/profile"
+                        className={clsx(
+                            "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all",
+                            pathname === '/profile'
+                                ? "bg-[var(--color-bg-accent)] text-[var(--color-brand-primary)]"
+                                : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-accent)] hover:text-[var(--color-text-primary)]"
+                        )}
+                    >
+                        <UserCircle className={clsx("w-5 h-5", pathname === '/profile' && "text-[var(--color-brand-primary)]")} />
+                        Meu Perfil
+                    </Link>
                     <button
                         onClick={() => auth.signOut()}
                         className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-[var(--color-text-secondary)] hover:bg-red-50 hover:text-red-500 transition-colors"

@@ -7,7 +7,8 @@ import sqlite3
 import logging
 from pathlib import Path
 
-from classification_service import ClassificationService
+from categories import ClassificationService
+from normalization import normalize_merchant
 
 logger = logging.getLogger("finance-pilot")
 
@@ -112,12 +113,11 @@ class TransactionProcessor:
 
             merchant_raw = str(row[merch_col])
 
-            # Use unified classification service for normalization
-            classification = self.classification_svc.classify(
-                merchant_raw, amount=amount, owner=owner
-            )
-
-            merchant_clean = classification["merchant_norm"]
+            # Normalize merchant name and classify using the new SaaS
+            # ClassificationService (categories.py) which supports
+            # workspace-level rules → default keywords → fallback.
+            merchant_clean = normalize_merchant(merchant_raw)
+            classification = self.classification_svc.classify(merchant_clean, tenant_id)
 
             rows.append({
                 "id": rec_id_full,
@@ -126,13 +126,14 @@ class TransactionProcessor:
                 "amount": amount,
                 "merchant_raw": merchant_raw,
                 "merchant_clean": merchant_clean,
-                "merchant_norm": classification["merchant_norm"],
-                "category": classification["category"],
+                "merchant_norm": merchant_clean,
+                "category": classification.category,
                 "subcategory": None,
-                "type": None,  # Will be filled by model or rule below
+                "type": None,  # Will be filled by card_type lookup
                 "owner": owner,
                 "tenant_id": tenant_id,
                 "source_file": filename,
+                "needs_review": classification.needs_review,
                 "created_at": datetime.datetime.now().isoformat()
             })
 
@@ -191,15 +192,9 @@ class TransactionProcessor:
             df_proc["day_of_week"] = df_proc["date"].apply(self._day_name_pt)
             df_proc["month"] = pd.to_datetime(df_proc["date"]).dt.month
 
-            # Type: use classification service rules for each row
-            for idx, row in df_proc.iterrows():
-                classification = self.classification_svc.classify(
-                    row["merchant_clean"],
-                    amount=row["amount"],
-                    owner=owner,
-                    existing_category=row["category"],
-                )
-                df_proc.at[idx, "type"] = classification["type"]
+            # Type: determined by card_type of registered cards (see card_service.py).
+            # For CSV uploads, type remains None until card matching is done.
+            # No reclassification of categories — they were already set in _process_chunk.
 
             # 3. Build gold rows directly from individual transactions (no aggregation)
             gold_rows = []

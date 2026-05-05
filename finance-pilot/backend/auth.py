@@ -56,3 +56,24 @@ def require_authenticated_user(tenant: TenantContext) -> str:
 def require_data_access(tenant: TenantContext) -> None:
     if REQUIRE_AUTH_FOR_DATA and not tenant.user_id:
         raise HTTPException(status_code=401, detail="Authentication required for data access")
+
+
+def require_tenant_id(tenant: TenantContext) -> str:
+    """Guard that rejects any Firestore/data operation without a valid tenant_id.
+
+    Returns the tenant_id for convenience so callers can use it directly.
+    Raises HTTPException 400 when tenant_id is missing or empty.
+
+    Note: ``"default"`` is a valid workspace id (used by legacy workspaces)
+    and is intentionally allowed through.
+    """
+    if (
+        not tenant
+        or not tenant.tenant_id
+        or not tenant.tenant_id.strip()
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="tenant_id is required for this operation. Provide a valid workspace context.",
+        )
+    return tenant.tenant_id

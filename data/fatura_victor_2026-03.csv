@@ -1,0 +1,23 @@
+id,date,month_ref,amount,merchant_clean,category,subcategory,owner,type,created_at,tenant_id
+dc1ddd9378ce5dfa8906bfda8d6f3c2d,2026-02-12,2026-02,30.0,Flaviamaria,Outro,,Victor,Individual,2026-04-07T20:38:52.123460,default
+fd46794f8b1f4e054bd0abe036532b19,2026-02-24,2026-02,65.49,Grillarica,Alimentacao,,Victor,Individual,2026-04-07T20:38:52.135046,default
+5198a0c69f7ced1edcd293289966fe3b,2026-02-25,2026-02,45.67,Potência Gaúcha,Alimentacao,,Victor,Individual,2026-04-07T20:38:52.143975,default
+ebf0feb366bccec6bdc7a63b8d7bbb8c,2026-02-26,2026-02,64.57,Grillarica,Alimentacao,,Victor,Individual,2026-04-07T20:38:52.148016,default
+4c019a9835a69b931ee62d1fee6d93fe,2026-02-26,2026-02,20.0,Potência Gaúcha,Alimentacao,,Victor,Individual,2026-04-07T20:38:52.157206,default
+80d7c33c6d187fe3cc10798087edfc32,2026-02-27,2026-02,132.24,Potência Gaúcha,Alimentacao,,Victor,Individual,2026-04-07T20:38:52.158576,default
+3aa336dd161aa942d5316c8ddbd4b221,2026-02-28,2026-02,239.97,Ea9 Fashion,Outro,,Victor,Individual,2026-04-07T20:38:52.164843,default
+9d61aec25b565c0da0b191f68594fc07,2026-02-28,2026-02,4.5,Pier,Alimentacao,,Victor,Individual,2026-04-07T20:38:52.178343,default
+200922ab6b30ff6640219c48cac4cdee,2026-02-28,2026-02,145.0,Jan Modas,Outro,,Victor,Individual,2026-04-07T20:38:52.192139,default
+3bc314a6f534b3cbc0e02a4d915210a1,2026-02-28,2026-02,238.15,Grotta Choperia,Outro,,Victor,Individual,2026-04-07T20:38:52.205924,default
+7251f4b101fedb39e1b02526fd9d6d22,2026-02-28,2026-02,79.0,Universo Das Calcinhas,Outro,,Victor,Individual,2026-04-07T20:38:52.219503,default
+b0da6cec29594a924d2c19da8cae4e3a,2026-03-03,2026-03,15.0,Estacionamento,Transporte,,Victor,Individual,2026-04-07T20:38:52.223834,default
+551f3dfaa6755097caf8e2454f45ccda,2026-03-04,2026-03,20.49,Filial 358 Drogal A,Outro,,Victor,Individual,2026-04-07T20:38:52.233863,default
+84dcabe22cceed6b3c2de519b8b27a17,2026-03-06,2026-03,41.0,Estacionamento (Allpark),Outro,,Victor,Individual,2026-04-07T20:38:52.237422,default
+b8ee1062884b1ae3ecea12a019b60350,2026-03-06,2026-03,167.19,Filial 358 Drogal A,Outro,,Victor,Individual,2026-04-07T20:38:52.248604,default
+ff82d387dbf74281cb80ae9adf44394e,2026-03-07,2026-03,40.87,Delta Supermercados,Alimentacao,,Victor,Individual,2026-04-07T20:38:52.254921,default
+02add605dfaae01816a62113373a6eab,2026-03-07,2026-03,20.0,Neemiasezequias,Outro,,Victor,Individual,2026-04-07T20:38:52.263316,default
+fea7ec68f5a9d67f38dfe100c96311af,2026-03-09,2026-03,116.23,V Bressan,Outro,,Victor,Individual,2026-04-07T20:38:52.275466,default
+20b7aec66eecde5a2665ec59d0b8921e,2026-03-09,2026-03,70.0,Bar,Alimentacao,,Victor,Individual,2026-04-07T20:38:52.289301,default
+144104b61d561c0e5af07ed8c07ea9d5,2026-03-09,2026-03,15.0,Arenajoga10,Saude,,Victor,Individual,2026-04-07T20:38:52.300341,default
+30e5a4f9aa76b925c3213afc72b4da0c,2026-03-12,2026-03,12.0,Novotel Sp Morumbi,Outro,,Victor,Individual,2026-04-07T20:38:52.314011,default
+61d671da51ef5bb1d9b0a55d10aefbb2,2026-03-12,2026-03,80.0,Vetcare -Ct,Outro,,Victor,Individual,2026-04-07T20:38:52.327656,default

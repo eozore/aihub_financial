@@ -1,0 +1,32 @@
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.env
+.env.*
+.env.local
+
+# Frontend environment (Firebase credentials)
+finance-pilot/frontend/.env.local
+
+# Data / outputs
+projects/**/data/output/
+projects/**/data/backup/
+projects/**/data/input/
+projects/**/reports/
+
+# PDFs with personal financial data
+data/*.pdf
+*.pdf
+
+# Credentials
+**/acesso.json
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Database files
+*.db

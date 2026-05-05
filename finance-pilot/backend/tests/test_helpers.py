@@ -1,7 +1,6 @@
 """Tests for helper/parsing functions."""
 import os
 os.environ.setdefault("USE_SQLITE", "true")
-os.environ.setdefault("AUTO_JOIN_LEGACY_WORKSPACE", "false")
 
 from helpers import (
     normalize_owner,
@@ -18,17 +17,21 @@ from fastapi import HTTPException
 
 
 class TestNormalizeOwner:
-    def test_victor(self):
-        assert normalize_owner("victor") == "Victor"
-        assert normalize_owner("VICTOR") == "Victor"
+    def test_strips_and_returns(self):
+        assert normalize_owner("victor") == "victor"
+        assert normalize_owner("  Alice  ") == "Alice"
 
-    def test_larissa(self):
-        assert normalize_owner("larissa") == "Larissa"
-        assert normalize_owner("Larissa") == "Larissa"
+    def test_preserves_case(self):
+        assert normalize_owner("Victor") == "Victor"
+        assert normalize_owner("VICTOR") == "VICTOR"
 
-    def test_invalid_raises(self):
+    def test_empty_raises(self):
         with pytest.raises(HTTPException):
-            normalize_owner("unknown")
+            normalize_owner("")
+
+    def test_none_raises(self):
+        with pytest.raises(HTTPException):
+            normalize_owner(None)
 
 
 class TestParseBrMoney:

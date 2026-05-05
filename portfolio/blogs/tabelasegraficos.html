@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tabelas e Gráficos — Visualização de Dados</title>
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --primary-color: #db4a2b;
+            --bg-color: #f8fafc;
+            --text-color: #1e293b;
+            --success-color: #10b981;
+            --error-color: #ef4444;
+        }
+        body { font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.8; color: var(--text-color); background-color: var(--bg-color); margin: 0; padding: 20px; }
+        .container { max-width: 900px; margin: 0 auto; background: #fff; padding: 40px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+        h1 { color: var(--primary-color); font-size: 2.5rem; margin-bottom: 10px; line-height: 1.2; }
+        h2 { color: var(--primary-color); border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; margin-top: 40px; }
+        h3 { color: #475569; margin-top: 30px; }
+        .subtitle { font-size: 1.2rem; color: #64748b; margin-bottom: 40px; font-weight: 300; }
+        .story-box { background-color: #eff6ff; border-left: 5px solid var(--primary-color); padding: 20px; border-radius: 0 8px 8px 0; margin: 30px 0; font-style: italic; }
+        .highlight-box { background-color: #fffbeb; border: 1px solid #fcd34d; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .highlight-title { font-weight: bold; color: #92400e; display: block; margin-bottom: 5px; }
+        .complexity-box { background-color: #f0fdf4; border: 1px solid #86efac; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .complexity-title { font-weight: bold; color: #166534; display: block; margin-bottom: 8px; }
+        table { width: 100%; border-collapse: collapse; margin: 25px 0; font-size: 0.9em; box-shadow: 0 0 20px rgba(0,0,0,0.05); }
+        table thead tr { background-color: var(--primary-color); color: #fff; text-align: left; }
+        table th, table td { padding: 12px 15px; border: 1px solid #ddd; }
+        table tbody tr { border-bottom: 1px solid #ddd; }
+        .chart-container { position: relative; height: 380px; width: 100%; margin: 30px 0; }
+        .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 30px 0; }
+        .chart-row .chart-container { margin: 0; height: 300px; }
+        .quiz-container { margin-top: 50px; border-top: 2px dashed #cbd5e1; padding-top: 30px; }
+        .question-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+        .question-text { font-weight: 600; margin-bottom: 15px; display: block; }
+        .options { display: flex; flex-direction: column; gap: 10px; }
+        .option-btn { padding: 10px 15px; border: 1px solid #cbd5e1; border-radius: 6px; background: white; cursor: pointer; text-align: left; transition: all 0.2s; }
+        .option-btn:hover { background-color: #f1f5f9; }
+        .option-btn.correct { background-color: #dcfce7; border-color: var(--success-color); color: #064e3b; }
+        .option-btn.incorrect { background-color: #fee2e2; border-color: var(--error-color); color: #7f1d1d; }
+        .feedback { margin-top: 10px; font-size: 0.9em; display: none; padding: 10px; border-radius: 6px; }
+        .feedback.show { display: block; }
+        .references { background-color: #f8fafc; padding: 20px; border-radius: 8px; margin-top: 40px; }
+        @media (max-width: 600px) { .container { padding: 20px; } h1 { font-size: 1.8rem; } .chart-row { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>Tabelas e Gráficos</h1>
+        <p class="subtitle">Como transformar números em decisões — visualização de dados para analistas e executivos</p>
+        <p style="font-size:0.85rem; color:#94a3b8;">📚 Artigo 3 de 7 — Bloco: Fundação Estatística &nbsp;| <a href="estatisticasbasicas.html" target="_blank" rel="noopener" style="color:#94a3b8;">← Artigo 2: Estatísticas Básicas</a></p>
+        <p style="margin-top:10px;"><a href="https://www.youtube.com/@eozore" target="_blank" rel="noopener" style="color:#db4a2b; font-weight:600;">Ver no YouTube</a></p>
+    </header>
+
+    <section>
+        <div class="story-box">
+            <h3>📉 O Gráfico que Salvou o Emprego de Carlos</h3>
+            <p>No artigo anterior, Carlos apresentou ao CEO a média salarial de R$ 8.400 — e três meses depois a inadimplência disparou. Desta vez, Carlos foi chamado novamente. O CEO queria entender <em>o que havia acontecido</em> e Carlos sabia que nenhuma tabela de números ia convencer alguém que não é técnico.</p>
+            <p>Ele precisava de algo diferente: precisava <strong>mostrar</strong> o problema, não apenas calculá-lo. Foi aí que Carlos aprendeu que a escolha do gráfico certo pode ser a diferença entre uma decisão correta e um desastre.</p>
+        </div>
+    </section>
+
+    <section>
+        <h2>Por Que Visualizar?</h2>
+        <p>Números em tabelas exigem que o leitor faça o trabalho cognitivo de encontrar padrões. Gráficos fazem esse trabalho por ele. Mas o gráfico errado pode distorcer a realidade tanto quanto a média sozinha.</p>
+
+        <div class="highlight-box">
+            <span class="highlight-title">💡 A Regra de Ouro</span>
+            Cada tipo de gráfico responde a uma pergunta específica. Antes de escolher o gráfico, defina a pergunta: <em>Quero mostrar distribuição? Comparação? Evolução no tempo? Relação entre variáveis?</em>
+        </div>
+
+        <table>
+            <thead>
+                <tr><th>Pergunta</th><th>Gráfico ideal</th><th>Exemplo no caso de Carlos</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>Como os dados se distribuem?</td><td>Histograma / Boxplot</td><td>Distribuição de salários dos clientes</td></tr>
+                <tr><td>Como comparar categorias?</td><td>Barras / Colunas</td><td>Inadimplência por faixa de renda</td></tr>
+                <tr><td>Como evoluiu no tempo?</td><td>Linha</td><td>Taxa de inadimplência mensal</td></tr>
+                <tr><td>Existe relação entre variáveis?</td><td>Dispersão (Scatter)</td><td>Salário vs. probabilidade de default</td></tr>
+                <tr><td>Qual a proporção do todo?</td><td>Pizza / Barras empilhadas</td><td>Composição da carteira por segmento</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section>
+        <h2>Histograma — A Distribuição Revelada</h2>
+        <p>O histograma divide os dados em intervalos (bins) e mostra a frequência de cada um. É o gráfico mais importante para entender a <strong>forma</strong> de uma distribuição — assimetria, caudas, múltiplos picos.</p>
+
+        <p>Carlos plotou o histograma dos salários e mostrou ao CEO o que a média escondia:</p>
+
+        <div class="chart-container">
+            <canvas id="histChart"></canvas>
+        </div>
+        <p><em>A linha vermelha é a média (R$ 8.4k). A linha azul é a mediana (R$ 3.5k). A cauda à direita — os clientes de alta renda — é o que inflou a média e mascarou o risco real da carteira.</em></p>
+
+        <div class="highlight-box">
+            <span class="highlight-title">⚠️ Cuidado com o número de bins</span>
+            Poucos bins escondem a forma real da distribuição. Muitos bins criam ruído. Uma regra prática é usar a <strong>Regra de Sturges</strong>: \(k = 1 + \log_2(n)\), onde \(n\) é o número de observações.
+        </div>
+    </section>
+
+    <section>
+        <h2>Boxplot — Cinco Números em Um Gráfico</h2>
+        <p>O boxplot resume a distribuição com cinco estatísticas: mínimo, Q1, mediana, Q3 e máximo — e ainda identifica outliers automaticamente pelo critério de Tukey (visto no Artigo 2).</p>
+        <p>É especialmente poderoso para <strong>comparar grupos</strong>. Carlos usou boxplots para comparar a distribuição de salários entre clientes adimplentes e inadimplentes:</p>
+
+        <div class="chart-row">
+            <div class="chart-container">
+                <canvas id="boxAdimChart"></canvas>
+            </div>
+            <div class="chart-container">
+                <canvas id="boxInadimChart"></canvas>
+            </div>
+        </div>
+        <p><em>Esquerda: clientes adimplentes (mediana R$ 4.2k, distribuição mais concentrada). Direita: inadimplentes (mediana R$ 2.1k, maior dispersão e mais outliers). Os boxplots abaixo usam amostras sintéticas com n=37 por grupo para estabilizar quartis e limites de Tukey.</em></p>
+
+        <div class="complexity-box">
+            <span class="complexity-title">🔬 Boxplot em Feature Engineering</span>
+            <p>Em pipelines de ML, boxplots são usados na fase de EDA (Análise Exploratória de Dados) para identificar features com alta concentração de outliers antes do treinamento. Uma feature com muitos outliers pode dominar modelos baseados em distância (KNN, SVM) e distorcer regressões lineares — o boxplot é o primeiro diagnóstico.</p>
+        </div>
+    </section>
+
+    <section>
+        <h2>Gráfico de Barras — Comparação entre Categorias</h2>
+        <p>Ideal para comparar valores entre categorias discretas. Carlos usou para mostrar a taxa de inadimplência por faixa de renda — o argumento definitivo para o CEO:</p>
+
+        <div class="chart-container" style="height:300px;">
+            <canvas id="barChart"></canvas>
+        </div>
+        <p><em>A taxa de inadimplência cai drasticamente conforme a renda aumenta. Isso justifica a estratificação do modelo de crédito por segmento — o insight que Carlos não conseguiu comunicar com a média.</em></p>
+
+        <div class="highlight-box">
+            <span class="highlight-title">💡 Barras vs. Pizza</span>
+            Evite gráficos de pizza para comparar mais de 3 categorias — o olho humano é ruim em comparar ângulos. Barras horizontais são sempre mais legíveis para muitas categorias e permitem rótulos longos.
+        </div>
+    </section>
+
+    <section>
+        <h2>Gráfico de Linha — Evolução no Tempo</h2>
+        <p>Para séries temporais, o gráfico de linha é o padrão. Carlos plotou a evolução da inadimplência mês a mês para mostrar quando o problema começou a se agravar:</p>
+
+        <div class="chart-container">
+            <canvas id="lineChart"></canvas>
+        </div>
+        <p><em>A inadimplência começou a subir em março — exatamente quando a campanha de aquisição sem segmentação de renda foi lançada. O gráfico de linha tornou a causa-efeito visualmente óbvia.</em></p>
+    </section>
+
+    <section>
+        <h2>Scatter Plot — Relação entre Variáveis</h2>
+        <p>O gráfico de dispersão mostra a relação entre duas variáveis numéricas. É o ponto de partida para análise de correlação — tema do Artigo 6. Carlos usou para mostrar a relação entre renda e probabilidade de default:</p>
+
+        <div class="chart-container">
+            <canvas id="scatterChart"></canvas>
+        </div>
+        <p><em>Cada ponto é um cliente. A tendência descendente confirma: quanto maior a renda, menor a probabilidade de default. Mas note a dispersão — renda explica parte do risco, não tudo.</em></p>
+
+        <div class="complexity-box">
+            <span class="complexity-title">🔬 Scatter Plot e Correlação de Pearson</span>
+            <p>O scatter plot é a visualização da correlação. Quando os pontos formam uma linha ascendente, a correlação de Pearson \(r\) é positiva e próxima de 1. Quando descendente, negativa. Quando não há padrão, \(r \approx 0\). No Artigo 6, vamos formalizar isso matematicamente e ver quando Pearson falha — e por que Spearman é mais robusto para dados como renda.</p>
+        </div>
+    </section>
+
+    <section>
+        <h2>Tabelas — Quando o Gráfico não Basta</h2>
+        <p>Tabelas são superiores a gráficos quando o leitor precisa de <strong>valores exatos</strong> para tomar decisões ou quando há muitas dimensões simultâneas. A regra é: use gráfico para mostrar padrão, use tabela para mostrar precisão.</p>
+
+        <table>
+            <thead>
+                <tr><th>Segmento de Renda</th><th>Clientes</th><th>Inadimplência (%)</th><th>Ticket Médio (R$)</th><th>Ação Recomendada</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>Até R$ 2k</td><td>1.240</td><td>34%</td><td>R$ 1.800</td><td>Restringir aprovação</td></tr>
+                <tr><td>R$ 2k – R$ 4k</td><td>3.890</td><td>18%</td><td>R$ 3.200</td><td>Manter com garantias</td></tr>
+                <tr><td>R$ 4k – R$ 8k</td><td>2.100</td><td>8%</td><td>R$ 5.500</td><td>Expandir oferta</td></tr>
+                <tr><td>Acima de R$ 8k</td><td>770</td><td>3%</td><td>R$ 12.000</td><td>Produto premium</td></tr>
+            </tbody>
+        </table>
+
+        <p>Com essa tabela e os gráficos anteriores, Carlos apresentou ao CEO um diagnóstico completo — e um plano de ação. O CEO aprovou a segmentação imediatamente.</p>
+    </section>
+
+    <section>
+        <div class="highlight-box" style="border-color:#db4a2b; background-color:#eff6ff;">
+            <h3>📝 Resumo para Levar na Mochila</h3>
+            <ul>
+                <li><strong>Histograma</strong> para ver a forma da distribuição (assimetria, caudas, outliers).</li>
+                <li><strong>Boxplot</strong> para comparar grupos e identificar outliers com o critério de Tukey.</li>
+                <li><strong>Barras</strong> para comparar categorias; evite pizza com mais de 3 categorias.</li>
+                <li><strong>Linha</strong> para evolução temporal — torna causa-efeito visualmente óbvia.</li>
+                <li><strong>Scatter</strong> para explorar relação entre duas variáveis numéricas.</li>
+                <li><strong>Tabela</strong> quando o leitor precisa de valores exatos para decidir.</li>
+            </ul>
+        </div>
+    </section>
+
+    <section>
+        <div class="complexity-box" style="border-color:#bae6fd; background-color:#f0f9ff;">
+            <span class="complexity-title">➡️ O Que Vem a Seguir</span>
+            <p>Você agora sabe calcular as estatísticas (Artigo 2) e visualizá-las (Artigo 3). O próximo passo é entender <strong>a linguagem matemática por trás da incerteza</strong>. No <a href="probabilidadedistribuicoes.html" target="_blank" rel="noopener">Artigo 4 — Probabilidade e Distribuições</a>, vamos ver como Beatriz, cientista de dados de um banco digital, descobriu que um modelo com 98% de acurácia era inútil — e como o Teorema de Bayes salvou o sistema de detecção de fraudes.</p>
+        </div>
+    </section>
+
+    <section class="references">
+        <h3>📚 Para Se Aprofundar</h3>
+        <ul>
+            <li><strong>"Storytelling with Data"</strong> — Cole Nussbaumer Knaflic. (O melhor livro sobre visualização para contexto de negócio.)</li>
+            <li><strong>"The Visual Display of Quantitative Information"</strong> — Edward Tufte. (O clássico sobre design de gráficos.)</li>
+            <li><strong>"Fundamentals of Data Visualization"</strong> — Claus O. Wilke. (Gratuito online, foco em boas práticas.)</li>
+        </ul>
+    </section>
+
+    <section class="quiz-container">
+        <h2>🧠 Teste Seu Conhecimento</h2>
+        <p style="margin-bottom:20px;">Responda às perguntas abaixo para validar o que aprendeu.</p>
+        <div id="quiz-root"></div>
+    </section>
+</div>
+
+<script>
+    // --- Histograma de salários com linhas de média e mediana ---
+    const histPlugin = {
+        id: 'histLines',
+        afterDraw(chart) {
+            const ctx = chart.ctx, xAxis = chart.scales.x, yAxis = chart.scales.y;
+            // média índice 14 (R$8.4k ~ bin 8-9k), mediana índice 4 (R$3.5k ~ bin 3-4k)
+            [[4, '#2563eb'], [14, '#f59e0b']].forEach(([idx, color]) => {
+                const x = xAxis.getPixelForValue(idx);
+                ctx.save();
+                ctx.beginPath(); ctx.moveTo(x, yAxis.top); ctx.lineTo(x, yAxis.bottom);
+                ctx.lineWidth = 2; ctx.strokeStyle = color; ctx.setLineDash([5,5]); ctx.stroke();
+                ctx.restore();
+            });
+        }
+    };
+    Chart.register(histPlugin);
+
+    const histLabels = ['0-1k','1-2k','2-3k','3-4k','4-5k','5-6k','6-7k','7-8k','8-9k','9-10k','10-15k','15-20k','20-30k','30-50k','50-80k','80k+'];
+    const histData   = [80, 320, 580, 720, 610, 430, 280, 190, 140, 110, 180, 90, 60, 35, 20, 15];
+
+    new Chart(document.getElementById('histChart').getContext('2d'), {
+        type: 'bar',
+        data: { labels: histLabels, datasets: [{ label: 'Clientes', data: histData, backgroundColor: 'rgba(219,74,43,0.5)', borderColor: '#db4a2b', borderWidth: 1 }] },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                y: { title: { display: true, text: 'Nº de Clientes' } },
+                x: {
+                    title: { display: true, text: 'Faixa Salarial' },
+                    ticks: { maxTicksLimit: 8, autoSkip: true, maxRotation: 0, minRotation: 0 }
+                }
+            }
+        }
+    });
+
+    // --- Boxplots corretos (quartis + Tukey) ---
+    function quantile(sortedValues, p) {
+        const n = sortedValues.length;
+        if (n === 0) return NaN;
+        const position = (n - 1) * p;
+        const lower = Math.floor(position);
+        const upper = Math.ceil(position);
+        const weight = position - lower;
+        if (lower === upper) return sortedValues[lower];
+        return sortedValues[lower] * (1 - weight) + sortedValues[upper] * weight;
+    }
+
+    function summarizeBoxplot(values) {
+        const sortedValues = [...values].sort((a, b) => a - b);
+        const q1 = quantile(sortedValues, 0.25);
+        const median = quantile(sortedValues, 0.5);
+        const q3 = quantile(sortedValues, 0.75);
+        const iqr = q3 - q1;
+        const lowerFence = q1 - 1.5 * iqr;
+        const upperFence = q3 + 1.5 * iqr;
+        const inliers = sortedValues.filter(v => v >= lowerFence && v <= upperFence);
+        const outliers = sortedValues.filter(v => v < lowerFence || v > upperFence);
+
+        return {
+            q1,
+            median,
+            q3,
+            whiskerMin: inliers[0],
+            whiskerMax: inliers[inliers.length - 1],
+            outliers,
+            sampleSize: sortedValues.length
+        };
+    }
+
+    function formatCurrency(value) {
+        return `R$${Math.round(value).toLocaleString('pt-BR')}`;
+    }
+
+    function formatCurrencyCompact(value) {
+        const numeric = Number(value);
+        if (Math.abs(numeric) >= 1000) {
+            const compact = (numeric / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+            return `R$${compact}k`;
+        }
+        return `R$${Math.round(numeric).toLocaleString('pt-BR')}`;
+    }
+
+    const boxplotPlugin = {
+        id: 'boxplotPlugin',
+        afterDatasetsDraw(chart, _args, opts) {
+            if (!opts || !opts.summary) return;
+
+            const summary = opts.summary;
+            const xAxis = chart.scales.x;
+            const yAxis = chart.scales.y;
+            const y = yAxis.getPixelForValue(0);
+            const q1X = xAxis.getPixelForValue(summary.q1);
+            const medX = xAxis.getPixelForValue(summary.median);
+            const q3X = xAxis.getPixelForValue(summary.q3);
+            const minX = xAxis.getPixelForValue(summary.whiskerMin);
+            const maxX = xAxis.getPixelForValue(summary.whiskerMax);
+
+            const boxHeight = 30;
+            const halfBox = boxHeight / 2;
+            const capHalf = 9;
+            const ctx = chart.ctx;
+
+            ctx.save();
+            ctx.strokeStyle = opts.strokeColor || '#db4a2b';
+            ctx.fillStyle = opts.fillColor || 'rgba(219,74,43,0.3)';
+            ctx.lineWidth = 2;
+
+            ctx.beginPath();
+            ctx.moveTo(minX, y);
+            ctx.lineTo(maxX, y);
+            ctx.stroke();
+
+            ctx.fillRect(q1X, y - halfBox, q3X - q1X, boxHeight);
+            ctx.strokeRect(q1X, y - halfBox, q3X - q1X, boxHeight);
+
+            ctx.beginPath();
+            ctx.moveTo(medX, y - halfBox);
+            ctx.lineTo(medX, y + halfBox);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(minX, y - capHalf);
+            ctx.lineTo(minX, y + capHalf);
+            ctx.moveTo(maxX, y - capHalf);
+            ctx.lineTo(maxX, y + capHalf);
+            ctx.stroke();
+
+            ctx.restore();
+        }
+    };
+    Chart.register(boxplotPlugin);
+
+    function makeBoxplot(canvasId, values, strokeColor, fillColor, axisMax) {
+        const summary = summarizeBoxplot(values);
+        const outlierPoints = summary.outliers.map(value => ({ x: value, y: 0 }));
+        const localMax = Math.max(
+            summary.whiskerMax,
+            ...(summary.outliers.length ? summary.outliers : [summary.whiskerMax])
+        );
+        const chartMax = axisMax || Math.ceil((localMax + 500) / 1000) * 1000;
+
+        new Chart(document.getElementById(canvasId).getContext('2d'), {
+            type: 'scatter',
+            data: {
+                datasets: [
+                    {
+                        label: 'Outliers',
+                        data: outlierPoints,
+                        pointRadius: 4,
+                        pointHoverRadius: 5,
+                        pointBackgroundColor: strokeColor,
+                        pointBorderColor: strokeColor
+                    },
+                    {
+                        label: 'Escala',
+                        data: [
+                            { x: summary.whiskerMin, y: 0 },
+                            { x: chartMax, y: 0 }
+                        ],
+                        pointRadius: 0,
+                        pointHoverRadius: 0,
+                        showLine: false
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: ctx => (
+                                ctx.datasetIndex === 0
+                                    ? `Outlier: ${formatCurrency(ctx.parsed.x)}`
+                                    : ''
+                            )
+                        }
+                    },
+                    boxplotPlugin: { summary, strokeColor, fillColor }
+                },
+                scales: {
+                    x: {
+                        type: 'linear',
+                        min: 0,
+                        max: chartMax,
+                        title: { display: true, text: 'Salário (R$)' },
+                        ticks: { maxTicksLimit: 6, callback: value => formatCurrencyCompact(value) }
+                    },
+                    y: {
+                        display: false,
+                        min: -1,
+                        max: 1,
+                        grid: { display: false }
+                    }
+                }
+            }
+        });
+    }
+
+    const adimplentes = [
+        1500, 1700, 1900, 2100, 2300, 2500, 2700, 2900, 3100, 3300,
+        3500, 3600, 3700, 3800, 3900, 4000, 4100, 4150, 4200, 4250,
+        4300, 4400, 4500, 4700, 4900, 5100, 5400, 5700, 6000, 6400,
+        6800, 7300, 7900, 8600, 9400, 10300, 11200
+    ];
+
+    const inadimplentes = [
+        150, 250, 600, 800, 950, 1100, 1300, 1450, 1600, 1700,
+        1800, 1850, 1900, 1950, 2000, 2050, 2080, 2090, 2100, 2120,
+        2150, 2200, 2250, 2300, 2350, 2400, 2500, 2600, 2700, 2900,
+        3200, 3500, 3800, 4200, 5000, 6200, 9000
+    ];
+
+    makeBoxplot('boxAdimChart', adimplentes, '#10b981', 'rgba(16,185,129,0.25)', 12000);
+    makeBoxplot('boxInadimChart', inadimplentes, '#ef4444', 'rgba(239,68,68,0.25)', 12000);
+
+    // --- Barras: inadimplência por faixa ---
+    new Chart(document.getElementById('barChart').getContext('2d'), {
+        type: 'bar',
+        data: {
+            labels: ['Até R$2k', 'R$2k–4k', 'R$4k–8k', 'Acima R$8k'],
+            datasets: [{ label: 'Taxa de Inadimplência (%)', data: [34, 18, 8, 3], backgroundColor: ['#ef4444','#f59e0b','#10b981','#2563eb'] }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: { y: { title: { display: true, text: 'Inadimplência (%)' }, max: 40 }, x: { title: { display: true, text: 'Faixa de Renda' } } }
+        }
+    });
+
+    // --- Linha: inadimplência mensal ---
+    new Chart(document.getElementById('lineChart').getContext('2d'), {
+        type: 'line',
+        data: {
+            labels: ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'],
+            datasets: [{
+                label: 'Inadimplência (%)', pointRadius: 4,
+                data: [8.1, 8.3, 9.2, 11.4, 13.8, 15.2, 16.1, 17.0, 17.8, 18.5, 19.1, 19.6],
+                borderColor: '#db4a2b', backgroundColor: 'rgba(219,74,43,0.1)', fill: true, tension: 0.3
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            scales: { y: { title: { display: true, text: 'Inadimplência (%)' } }, x: { title: { display: true, text: '2024' } } }
+        }
+    });
+
+    // --- Scatter: renda vs probabilidade de default ---
+    const scatterData = [];
+    for (let i = 0; i < 120; i++) {
+        const renda = 1000 + Math.random() * 19000;
+        const pDefault = Math.max(0, Math.min(1, 0.45 - renda / 50000 + (Math.random() - 0.5) * 0.2));
+        scatterData.push({ x: Math.round(renda), y: +(pDefault * 100).toFixed(1) });
+    }
+    new Chart(document.getElementById('scatterChart').getContext('2d'), {
+        type: 'scatter',
+        data: { datasets: [{ label: 'Clientes', data: scatterData, backgroundColor: 'rgba(219,74,43,0.4)', pointRadius: 4 }] },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            scales: {
+                x: { title: { display: true, text: 'Renda Mensal (R$)' } },
+                y: { title: { display: true, text: 'P(Default) (%)' }, min: 0, max: 50 }
+            }
+        }
+    });
+
+    // --- Quiz ---
+    const questions = [
+        {
+            text: "Carlos precisava convencer o CEO sobre o problema de inadimplência. Por que um gráfico foi mais eficaz que uma tabela de números?",
+            options: ["Porque gráficos são mais bonitos.", "Porque gráficos fazem o trabalho cognitivo de encontrar padrões, tornando o insight imediato.", "Porque tabelas são proibidas em apresentações executivas.", "Porque o CEO não sabe ler tabelas.", "Porque gráficos ocupam menos espaço."],
+            correct: 1,
+            feedback: "Exato! Gráficos externalizam o processamento cognitivo — o padrão fica visível sem esforço mental do leitor."
+        },
+        {
+            text: "Qual gráfico é mais adequado para mostrar a distribuição de salários e identificar assimetria?",
+            options: ["Gráfico de pizza.", "Gráfico de linha.", "Histograma.", "Gráfico de barras empilhadas.", "Scatter plot."],
+            correct: 2,
+            feedback: "Correto! O histograma mostra a forma da distribuição — assimetria, caudas e múltiplos picos ficam imediatamente visíveis."
+        },
+        {
+            text: "O boxplot usa o critério de Tukey para identificar outliers. Um ponto é outlier se:",
+            options: ["For maior que a média.", "Estiver além de 2 desvios padrão.", "For menor que Q1 - 1.5×IQR ou maior que Q3 + 1.5×IQR.", "For igual à moda.", "Estiver no percentil 99."],
+            correct: 2,
+            feedback: "Isso! O critério de Tukey foi apresentado no Artigo 2 — o boxplot é sua representação visual direta."
+        },
+        {
+            text: "Carlos quer comparar a taxa de inadimplência entre 4 faixas de renda. Qual gráfico usar?",
+            options: ["Gráfico de pizza.", "Histograma.", "Scatter plot.", "Gráfico de barras.", "Gráfico de linha."],
+            correct: 3,
+            feedback: "Correto! Barras são ideais para comparar valores entre categorias discretas. Pizza seria inadequado para 4 categorias."
+        },
+        {
+            text: "Para mostrar que a inadimplência começou a subir em março após uma campanha de aquisição, qual gráfico é mais eficaz?",
+            options: ["Boxplot.", "Histograma.", "Gráfico de linha.", "Scatter plot.", "Gráfico de barras agrupadas."],
+            correct: 2,
+            feedback: "Exato! O gráfico de linha é o padrão para séries temporais — torna a relação causa-efeito visualmente óbvia."
+        },
+        {
+            text: "O scatter plot de renda vs. probabilidade de default mostra uma tendência descendente. Isso indica:",
+            options: ["Que renda e default são independentes.", "Uma correlação negativa — quanto maior a renda, menor o risco de default.", "Uma correlação positiva.", "Que o gráfico está errado.", "Que a mediana é maior que a média."],
+            correct: 1,
+            feedback: "Correto! Tendência descendente no scatter = correlação negativa. Isso será formalizado com Pearson e Spearman no Artigo 6."
+        },
+        {
+            text: "Quando uma tabela é preferível a um gráfico?",
+            options: ["Sempre — tabelas são mais precisas.", "Quando o leitor precisa de valores exatos para tomar decisões.", "Quando há mais de 10 variáveis.", "Quando o público é executivo.", "Nunca — gráficos são sempre melhores."],
+            correct: 1,
+            feedback: "Isso! Use gráfico para mostrar padrão, use tabela para mostrar precisão. São complementares, não concorrentes."
+        },
+        {
+            text: "A Regra de Sturges define o número ideal de bins de um histograma como k = 1 + log₂(n). Para 1.000 observações, quantos bins aproximadamente?",
+            options: ["5", "10", "11", "20", "100"],
+            correct: 2,
+            feedback: "Correto! log₂(1000) ≈ 10, então k ≈ 11 bins. Poucos bins escondem a forma; muitos criam ruído."
+        },
+        {
+            text: "Por que boxplots são úteis na fase de EDA antes de treinar um modelo de ML?",
+            options: ["Porque são mais rápidos de calcular.", "Porque identificam features com alta concentração de outliers que podem distorcer modelos baseados em distância.", "Porque substituem a normalização.", "Porque calculam a correlação automaticamente.", "Porque são exigidos pelo scikit-learn."],
+            correct: 1,
+            feedback: "Exato! Features com muitos outliers podem dominar KNN e SVM, e distorcer regressões — o boxplot é o primeiro diagnóstico de EDA."
+        },
+        {
+            text: "Carlos usou barras coloridas por faixa de renda para mostrar inadimplência. Por que evitar gráfico de pizza nesse caso?",
+            options: ["Porque pizza é informal.", "Porque o olho humano é ruim em comparar ângulos — barras são mais precisas para comparação.", "Porque pizza só funciona com dados temporais.", "Porque pizza não suporta mais de 2 categorias.", "Porque pizza não tem legenda."],
+            correct: 1,
+            feedback: "Correto! Comparar ângulos é cognitivamente difícil. Barras permitem comparação direta de comprimento — muito mais precisa."
+        }
+    ];
+
+    function renderQuiz() {
+        const root = document.getElementById('quiz-root');
+        questions.forEach((q, index) => {
+            const card = document.createElement('div');
+            card.className = 'question-card';
+            const title = document.createElement('span');
+            title.className = 'question-text';
+            title.innerText = `${index + 1}. ${q.text}`;
+            card.appendChild(title);
+            const optionsDiv = document.createElement('div');
+            optionsDiv.className = 'options';
+            const feedbackDiv = document.createElement('div');
+            feedbackDiv.className = 'feedback';
+            q.options.forEach((opt, i) => {
+                const btn = document.createElement('button');
+                btn.className = 'option-btn';
+                btn.innerText = opt;
+                btn.onclick = () => {
+                    optionsDiv.querySelectorAll('.option-btn').forEach(b => b.disabled = true);
+                    if (i === q.correct) {
+                        btn.classList.add('correct');
+                        feedbackDiv.innerText = "✅ " + q.feedback;
+                        feedbackDiv.style.backgroundColor = "#dcfce7";
+                        feedbackDiv.style.color = "#064e3b";
+                    } else {
+                        btn.classList.add('incorrect');
+                        optionsDiv.querySelectorAll('.option-btn')[q.correct].classList.add('correct');
+                        feedbackDiv.innerText = "❌ Incorreto. " + q.feedback;
+                        feedbackDiv.style.backgroundColor = "#fee2e2";
+                        feedbackDiv.style.color = "#7f1d1d";
+                    }
+                    feedbackDiv.classList.add('show');
+                };
+                optionsDiv.appendChild(btn);
+            });
+            card.appendChild(optionsDiv);
+            card.appendChild(feedbackDiv);
+            root.appendChild(card);
+        });
+    }
+    renderQuiz();
+</script>
+</body>
+</html>

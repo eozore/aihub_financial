@@ -1,0 +1,66 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── Transactions ───
+    // Only allow read/write when the document's tenant_id matches the
+    // authenticated user's tenant claim.  This prevents cross-tenant
+    // data leakage at the Firestore level (defense in depth).
+    match /transactions/{docId} {
+      allow read, write: if request.auth != null
+        && resource.data.tenant_id == request.auth.token.tenant_id;
+
+      allow create: if request.auth != null
+        && request.resource.data.tenant_id == request.auth.token.tenant_id;
+    }
+
+    // ─── Net Worth ───
+    match /net_worth_monthly/{docId} {
+      allow read, write: if request.auth != null
+        && resource.data.tenant_id == request.auth.token.tenant_id;
+
+      allow create: if request.auth != null
+        && request.resource.data.tenant_id == request.auth.token.tenant_id;
+    }
+
+    // ─── Current Account ───
+    match /current_account_movements/{docId} {
+      allow read, write: if request.auth != null
+        && resource.data.tenant_id == request.auth.token.tenant_id;
+
+      allow create: if request.auth != null
+        && request.resource.data.tenant_id == request.auth.token.tenant_id;
+    }
+
+    // ─── Users (profile) ───
+    match /users/{userId} {
+      allow read, write: if request.auth != null
+        && request.auth.uid == userId;
+    }
+
+    // ─── Workspaces ───
+    match /workspaces/{workspaceId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+        && resource.data.owner_user_id == request.auth.uid;
+    }
+
+    // ─── Workspace Members ───
+    match /workspace_members/{docId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    // ─── Workspace Invites ───
+    match /workspace_invites/{docId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    // ─── Deny everything else by default ───
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -60,3 +60,13 @@ class NetWorthRowUpdate(BaseModel):
     net_worth_total: Optional[float] = None
     debt_ratio: Optional[float] = None
     notes: Optional[str] = None
+
+
+class UserProfileUpdate(BaseModel):
+    """Model for updating user profile fields."""
+    display_name: Optional[str] = None
+    short_name: Optional[str] = None
+    photo_url: Optional[str] = None
+    birth_date: Optional[str] = None  # YYYY-MM-DD
+    cpf: Optional[str] = None
+    address: Optional[str] = None

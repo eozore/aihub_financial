@@ -1,0 +1,7 @@
+numpy
+pandas
+torch
+scikit-learn
+gspread
+oauth2client
+gspread-dataframe

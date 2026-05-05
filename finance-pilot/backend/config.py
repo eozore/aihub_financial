@@ -43,10 +43,7 @@ WORKSPACE_INVITES_COLLECTION = os.environ.get("WORKSPACE_INVITES_COLLECTION", "w
 NET_WORTH_COLLECTION = os.environ.get("NET_WORTH_COLLECTION", "net_worth_monthly")
 CURRENT_ACCOUNT_COLLECTION = os.environ.get("CURRENT_ACCOUNT_COLLECTION", "current_account_movements")
 
-# ─── Workspace / Legacy ───
-AUTO_JOIN_LEGACY_WORKSPACE = os.environ.get("AUTO_JOIN_LEGACY_WORKSPACE", "true").lower() == "true"
-DEFAULT_LEGACY_MEMBER_LIMIT = int(os.environ.get("DEFAULT_LEGACY_MEMBER_LIMIT", "2"))
-LEGACY_SHARED_EMAILS: List[str] = _parse_email_list(os.environ.get("LEGACY_SHARED_EMAILS", ""))
+# ─── Workspace ───
 PREMIUM_EMAILS: Set[str] = set(_parse_email_list(os.environ.get("PREMIUM_EMAILS", "")))
 ADMIN_EMAILS: Set[str] = set(_parse_email_list(os.environ.get("ADMIN_EMAILS", "")))
 
@@ -86,12 +83,3 @@ PLAN_LIMITS = {
     "free": {"max_workspaces": 1, "max_members_per_workspace": 1},
     "paid": {"max_workspaces": 3, "max_members_per_workspace": 2},
 }
-
-# ─── Owners ───
-# Configurable list of owners (people who share expenses).
-# Set OWNERS env var as comma-separated names, e.g. "Victor,Larissa"
-OWNERS = [
-    name.strip()
-    for name in os.environ.get("OWNERS", "Victor,Larissa").split(",")
-    if name.strip()
-]

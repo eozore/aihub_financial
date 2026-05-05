@@ -20,11 +20,9 @@ from config import (
     TENANT_HEADER_NAME, DEFAULT_TENANT_ID, TENANT_REQUIRED,
     USERS_COLLECTION, WORKSPACES_COLLECTION, WORKSPACE_MEMBERS_COLLECTION,
     WORKSPACE_INVITES_COLLECTION, NET_WORTH_COLLECTION, CURRENT_ACCOUNT_COLLECTION,
-    AUTO_JOIN_LEGACY_WORKSPACE, DEFAULT_LEGACY_MEMBER_LIMIT,
-    LEGACY_SHARED_EMAILS, PREMIUM_EMAILS, ADMIN_EMAILS, PLAN_LIMITS,
+    PREMIUM_EMAILS, ADMIN_EMAILS, PLAN_LIMITS,
     CORS_ORIGINS, CORS_ALLOWED_METHODS, CORS_ALLOWED_HEADERS,
     USE_SQLITE, USE_MOCK, MOCK_DATA_PATH, REQUIRE_AUTH_FOR_DATA,
-    OWNERS,
 )
 
 # --- Dedicated module imports (deduplication - Phase 5) ---
@@ -46,20 +44,96 @@ from auth import (
     extract_tenant_from_claims as _extract_tenant_from_claims,
     require_authenticated_user as _require_authenticated_user,
     require_data_access as _require_data_access,
+    require_tenant_id as _require_tenant_id,
 )
 from models import (
     TenantContext,
     TransactionUpdate,
     TransactionCreate,
     PlanUpdate,
+    UserProfileUpdate,
     WorkspaceCreate,
     WorkspaceUpdate,
     WorkspaceInviteCreate,
     NetWorthRowUpdate,
 )
-from upload_validation import validate_and_read_upload as _validate_and_read_upload
+from upload_validation import validate_and_read_upload as _validate_and_read_upload, detect_file_type as _detect_file_type
+from extraction_service import ExtractionService as _ExtractionService
+from card_service import (
+    CardCreate as _CardCreate,
+    CardUpdate as _CardUpdate,
+    CardResponse as _CardResponse,
+    create_card as _create_card,
+    list_cards as _list_cards,
+    update_card as _update_card,
+    delete_card as _delete_card,
+)
+from categories import (
+    create_rule as _create_rule,
+    list_rules as _list_rules,
+    update_rule as _update_rule,
+    delete_rule as _delete_rule,
+)
+from billing_service import (
+    BillingService as _BillingService,
+    CreateSubscriptionRequest as _CreateSubscriptionRequest,
+    CreateSubscriptionResponse as _CreateSubscriptionResponse,
+    BillingStatusResponse as _BillingStatusResponse,
+)
 
 logger = logging.getLogger("finance-pilot")
+
+# ---------------------------------------------------------------------------
+# Singleton ExtractionService instance (in-memory cache across requests)
+# ---------------------------------------------------------------------------
+_extraction_service = _ExtractionService()
+
+# ---------------------------------------------------------------------------
+# Singleton BillingService instance
+# ---------------------------------------------------------------------------
+_billing_service = _BillingService()
+
+
+# ---------------------------------------------------------------------------
+# Upload preview / confirm Pydantic models (Task 10.2 / 10.3)
+# ---------------------------------------------------------------------------
+
+class PreviewTransaction(BaseModel):
+    date: str
+    card_last4: Optional[str] = None
+    description: str
+    amount: float
+    is_refund: bool = False
+    suggested_category: str
+    suggested_type: Optional[str] = None
+    needs_review: bool = False
+
+
+class UploadPreviewResponse(BaseModel):
+    file_hash: str
+    statement_type: Literal["credit_card", "current_account"]
+    bank: str
+    holder_name: str
+    period_start: str
+    period_end: str
+    total_amount: float
+    transactions: List[PreviewTransaction]
+    unregistered_cards: List[str]
+
+
+class ConfirmedTransaction(BaseModel):
+    date: str
+    card_last4: Optional[str] = None
+    description: str
+    amount: float
+    is_refund: bool = False
+    category: str
+    owner: str
+
+
+class UploadConfirmRequest(BaseModel):
+    file_hash: str
+    transactions: List[ConfirmedTransaction]
 
 def _parse_email_list(value: str) -> List[str]:
     return [
@@ -355,6 +429,18 @@ if USE_SQLITE:
     ensure_sqlite_tenant_column()
     ensure_sqlite_financial_tables()
 
+    # Run reversible schema migrations (replaces inline ensure_sqlite_* for SaaS tables).
+    from migrations.runner import run_pending as _run_pending_migrations
+    _mig_conn = get_db_connection()
+    try:
+        _applied = _run_pending_migrations(_mig_conn)
+        if _applied:
+            logger.info("Applied %d migration(s): %s", len(_applied), ", ".join(_applied))
+    except Exception as _mig_exc:
+        logger.error("Migration runner failed: %s", _mig_exc)
+    finally:
+        _mig_conn.close()
+
 def ensure_bigquery_tenant_columns():
     if USE_SQLITE or USE_MOCK or not bq_client:
         return
@@ -470,6 +556,12 @@ def _upsert_user_profile(
     plan_type: Optional[str] = None,
     is_admin: Optional[bool] = None,
     active_workspace_id: Optional[str] = None,
+    display_name: Optional[str] = None,
+    short_name: Optional[str] = None,
+    photo_url: Optional[str] = None,
+    birth_date: Optional[str] = None,  # YYYY-MM-DD
+    cpf: Optional[str] = None,
+    address: Optional[str] = None,
 ):
     existing = _get_user_profile(user_id) or {}
     now = _utc_now_iso()
@@ -479,6 +571,12 @@ def _upsert_user_profile(
         "plan_type": _normalize_plan(plan_type if plan_type is not None else existing.get("plan_type", "free")),
         "is_admin": bool(is_admin if is_admin is not None else existing.get("is_admin", False)),
         "active_workspace_id": active_workspace_id if active_workspace_id is not None else existing.get("active_workspace_id"),
+        "display_name": display_name if display_name is not None else existing.get("display_name"),
+        "short_name": short_name if short_name is not None else existing.get("short_name"),
+        "photo_url": photo_url if photo_url is not None else existing.get("photo_url"),
+        "birth_date": birth_date if birth_date is not None else existing.get("birth_date"),
+        "cpf": cpf if cpf is not None else existing.get("cpf"),
+        "address": address if address is not None else existing.get("address"),
         "created_at": existing.get("created_at") or now,
         "updated_at": now,
     }
@@ -730,6 +828,29 @@ def _list_workspace_members(workspace_id: str) -> List[dict]:
     rows.sort(key=lambda x: x.get("created_at") or "")
     return rows
 
+
+def _get_workspace_owner_names(workspace_id: str) -> List[str]:
+    """Return the display names of all members in a workspace.
+
+    Priority: display_name → short_name → email → user_id → "unknown".
+    This replaces the old static ``OWNERS`` list from config.py.
+    """
+    members = _list_workspace_members(workspace_id)
+    names: List[str] = []
+    for m in members:
+        # Try display_name first, then short_name, then email, then user_id
+        profile = _get_user_profile(m.get("user_id")) or {}
+        name = (
+            profile.get("display_name")
+            or profile.get("short_name")
+            or m.get("email")
+            or m.get("user_id")
+            or "unknown"
+        )
+        names.append(name)
+    return names if names else ["default"]
+
+
 def _list_user_workspaces(user_id: str) -> List[dict]:
     if USE_SQLITE:
         conn = get_db_connection()
@@ -940,7 +1061,7 @@ def ensure_default_workspace_exists(owner_user_id: Optional[str] = None):
         workspace_id=DEFAULT_TENANT_ID,
         name="Painel Principal",
         owner_user_id=owner_id,
-        member_limit=DEFAULT_LEGACY_MEMBER_LIMIT,
+        member_limit=2,
     )
 
 
@@ -990,10 +1111,8 @@ def _is_admin_email(email: Optional[str]) -> bool:
 
 
 def _can_auto_join_legacy(email: Optional[str]) -> bool:
-    normalized_email = _normalize_email(email)
-    return AUTO_JOIN_LEGACY_WORKSPACE and (
-        not LEGACY_SHARED_EMAILS or normalized_email in LEGACY_SHARED_EMAILS
-    )
+    """Legacy auto-join is disabled — workspace membership is now managed explicitly."""
+    return False
 
 
 def _list_all_user_profiles() -> List[dict]:
@@ -1020,12 +1139,12 @@ def _list_all_user_profiles() -> List[dict]:
 
 
 def bootstrap_configured_accounts():
-    if not AUTO_JOIN_LEGACY_WORKSPACE and not PREMIUM_EMAILS and not ADMIN_EMAILS:
+    if not PREMIUM_EMAILS and not ADMIN_EMAILS:
         return
 
     default_workspace = ensure_default_workspace_exists()
     default_has_data = _tenant_has_data(DEFAULT_TENANT_ID)
-    configured_emails = set(LEGACY_SHARED_EMAILS) | PREMIUM_EMAILS | ADMIN_EMAILS
+    configured_emails = PREMIUM_EMAILS | ADMIN_EMAILS
     if not configured_emails:
         return
 
@@ -1039,18 +1158,6 @@ def bootstrap_configured_accounts():
         desired_plan = "paid" if _is_premium_email(email) else current_plan
         desired_admin = bool(profile.get("is_admin")) or _is_admin_email(email)
         desired_active_workspace = profile.get("active_workspace_id")
-
-        if _can_auto_join_legacy(email):
-            membership = _get_workspace_member(DEFAULT_TENANT_ID, user_id)
-            if not membership:
-                current_members = _count_workspace_members(DEFAULT_TENANT_ID)
-                role = "owner" if current_members == 0 else "member"
-                _add_workspace_member(DEFAULT_TENANT_ID, user_id, role)
-
-            if default_has_data and desired_active_workspace != DEFAULT_TENANT_ID:
-                active_has_data = _tenant_has_data(desired_active_workspace)
-                if not active_has_data:
-                    desired_active_workspace = DEFAULT_TENANT_ID
 
         _upsert_user_profile(
             user_id=user_id,
@@ -1106,25 +1213,18 @@ def ensure_user_profile(user_id: str, email: Optional[str]) -> dict:
     workspaces = _list_user_workspaces(user_id)
     if not workspaces:
         active_workspace_id = None
-        if can_auto_join_legacy:
-            ensure_default_workspace_exists(owner_user_id=user_id)
-            legacy_members = _count_workspace_members(DEFAULT_TENANT_ID)
-            if legacy_members < DEFAULT_LEGACY_MEMBER_LIMIT:
-                role = "owner" if legacy_members == 0 else "member"
-                _add_workspace_member(DEFAULT_TENANT_ID, user_id, role)
-                active_workspace_id = DEFAULT_TENANT_ID
 
-        if not active_workspace_id:
-            personal_workspace_id = _personal_workspace_id_for_user(user_id)
-            personal_limit = _plan_limits(profile.get("plan_type", "free"))["max_members_per_workspace"]
-            _create_workspace(
-                workspace_id=personal_workspace_id,
-                name="Meu Painel",
-                owner_user_id=user_id,
-                member_limit=personal_limit,
-            )
-            _add_workspace_member(personal_workspace_id, user_id, "owner")
-            active_workspace_id = personal_workspace_id
+        # Create a personal workspace for the user
+        personal_workspace_id = _personal_workspace_id_for_user(user_id)
+        personal_limit = _plan_limits(profile.get("plan_type", "free"))["max_members_per_workspace"]
+        _create_workspace(
+            workspace_id=personal_workspace_id,
+            name="Meu Painel",
+            owner_user_id=user_id,
+            member_limit=personal_limit,
+        )
+        _add_workspace_member(personal_workspace_id, user_id, "owner")
+        active_workspace_id = personal_workspace_id
 
         profile = _upsert_user_profile(
             user_id=user_id,
@@ -1149,9 +1249,6 @@ def ensure_user_profile(user_id: str, email: Optional[str]) -> dict:
 
 if USE_SQLITE:
     ensure_sqlite_workspace_tables()
-
-if AUTO_JOIN_LEGACY_WORKSPACE:
-    ensure_default_workspace_exists()
 
 try:
     bootstrap_configured_accounts()
@@ -1209,9 +1306,183 @@ def read_root():
     }
 
 @app.get("/owners")
-def list_owners():
-    """Returns the configured list of owners (people sharing expenses)."""
-    return {"owners": OWNERS}
+def list_owners(tenant: TenantContext = Depends(get_tenant_context)):
+    """Returns the members of the current workspace as owners (dynamic, not static config)."""
+    owners = _get_workspace_owner_names(tenant.tenant_id)
+    return {"owners": owners}
+
+
+# ---------------------------------------------------------------------------
+# Cards CRUD — Requirements 3.1, 3.4, 3.5, 3.6
+# ---------------------------------------------------------------------------
+
+@app.post("/cards", response_model=_CardResponse, status_code=201)
+def create_card_endpoint(
+    payload: _CardCreate,
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """Create a new card in the current workspace."""
+    _require_tenant_id(tenant)
+
+    # --- Plan limit check: cards ---
+    if not _billing_service.check_limit(tenant.tenant_id, "cards"):
+        limit_val = _billing_service.get_plan_limit(tenant.tenant_id, "cards")
+        raise HTTPException(
+            status_code=402,
+            detail=f"Card limit reached ({limit_val} cards). Upgrade your plan to add more cards.",
+        )
+
+    return _create_card(tenant.tenant_id, payload)
+
+
+@app.get("/cards", response_model=List[_CardResponse])
+def list_cards_endpoint(tenant: TenantContext = Depends(get_tenant_context)):
+    """List all cards belonging to the current workspace."""
+    _require_tenant_id(tenant)
+    return _list_cards(tenant.tenant_id)
+
+
+@app.put("/cards/{card_id}", response_model=_CardResponse)
+def update_card_endpoint(
+    card_id: str,
+    payload: _CardUpdate,
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """Update a card (only if it belongs to the current workspace)."""
+    _require_tenant_id(tenant)
+    return _update_card(tenant.tenant_id, card_id, payload)
+
+
+@app.delete("/cards/{card_id}", status_code=204)
+def delete_card_endpoint(
+    card_id: str,
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """Remove a card (only if it belongs to the current workspace)."""
+    _require_tenant_id(tenant)
+    _delete_card(tenant.tenant_id, card_id)
+
+
+# ---------------------------------------------------------------------------
+# Category Rules CRUD — Requirement 4.5
+# ---------------------------------------------------------------------------
+
+class CategoryRuleCreate(BaseModel):
+    merchant_pattern: str
+    category: str
+
+
+class CategoryRuleResponse(BaseModel):
+    id: str
+    workspace_id: str
+    merchant_pattern: str
+    category: str
+    created_by: Optional[str] = None
+    created_at: str
+
+
+@app.post("/category-rules", response_model=CategoryRuleResponse, status_code=201)
+def create_category_rule_endpoint(
+    payload: CategoryRuleCreate,
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """Create a custom category rule for the current workspace."""
+    tenant_id = _require_tenant_id(tenant)
+    try:
+        rule = _create_rule(
+            workspace_id=tenant_id,
+            merchant_pattern=payload.merchant_pattern,
+            category=payload.category,
+            created_by=tenant.user_id,
+        )
+        return rule
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/category-rules", response_model=List[CategoryRuleResponse])
+def list_category_rules_endpoint(
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """List all category rules belonging to the current workspace."""
+    tenant_id = _require_tenant_id(tenant)
+    return _list_rules(tenant_id)
+
+
+@app.put("/category-rules/{rule_id}", response_model=CategoryRuleResponse)
+def update_category_rule_endpoint(
+    rule_id: str,
+    payload: CategoryRuleCreate,
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """Update a category rule (only if it belongs to the current workspace)."""
+    tenant_id = _require_tenant_id(tenant)
+    try:
+        rule = _update_rule(
+            workspace_id=tenant_id,
+            rule_id=rule_id,
+            merchant_pattern=payload.merchant_pattern,
+            category=payload.category,
+        )
+        return rule
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete("/category-rules/{rule_id}", status_code=204)
+def delete_category_rule_endpoint(
+    rule_id: str,
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """Remove a category rule (only if it belongs to the current workspace)."""
+    tenant_id = _require_tenant_id(tenant)
+    try:
+        _delete_rule(tenant_id, rule_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Billing — Mercado Pago integration (Requirements 8.1–8.8)
+# ---------------------------------------------------------------------------
+
+@app.post("/billing/create-subscription", response_model=_CreateSubscriptionResponse)
+def create_subscription_endpoint(
+    payload: _CreateSubscriptionRequest,
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """Create a Mercado Pago subscription and return the checkout URL."""
+    _require_authenticated_user(tenant)
+    _require_tenant_id(tenant)
+    result = _billing_service.create_subscription(tenant.tenant_id, payload.plan_type)
+    return _CreateSubscriptionResponse(**result)
+
+
+@app.post("/billing/webhook")
+def billing_webhook_endpoint(request: Request, payload: dict):
+    """Receive IPN notifications from Mercado Pago (no auth required)."""
+    _billing_service.process_webhook(payload)
+    return {"status": "ok"}
+
+
+@app.get("/billing/status", response_model=_BillingStatusResponse)
+def billing_status_endpoint(
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """Return the current subscription status for the workspace."""
+    _require_authenticated_user(tenant)
+    _require_tenant_id(tenant)
+    return _billing_service.get_status(tenant.tenant_id)
+
+
+@app.post("/billing/cancel")
+def billing_cancel_endpoint(
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """Cancel the active subscription for the workspace."""
+    _require_authenticated_user(tenant)
+    _require_tenant_id(tenant)
+    return _billing_service.cancel_subscription(tenant.tenant_id)
 
 
 @app.get("/me")
@@ -1220,6 +1491,7 @@ def get_me(tenant: TenantContext = Depends(get_tenant_context)):
     profile = ensure_user_profile(user_id=user_id, email=tenant.user_email)
     workspaces = _list_user_workspaces(user_id)
     limits = _plan_limits(profile.get("plan_type", "free"))
+    billing_status = _billing_service.get_status(tenant.tenant_id)
     return {
         "user_id": user_id,
         "email": profile.get("email"),
@@ -1228,6 +1500,10 @@ def get_me(tenant: TenantContext = Depends(get_tenant_context)):
         "limits": limits,
         "active_workspace_id": profile.get("active_workspace_id"),
         "workspace_count": len(workspaces),
+        "billing_plan": billing_status.plan_type,
+        "display_name": profile.get("display_name"),
+        "short_name": profile.get("short_name"),
+        "photo_url": profile.get("photo_url"),
     }
 
 @app.put("/me/plan")
@@ -1271,6 +1547,22 @@ def update_my_plan(payload: PlanUpdate, tenant: TenantContext = Depends(get_tena
         active_workspace_id=profile.get("active_workspace_id"),
     )
     return {"status": "updated", "plan_type": updated.get("plan_type")}
+
+
+@app.put("/me/profile")
+def update_my_profile(payload: UserProfileUpdate, tenant: TenantContext = Depends(get_tenant_context)):
+    """Update the authenticated user's profile fields (display_name, short_name, etc.)."""
+    user_id = _require_authenticated_user(tenant)
+    profile = _upsert_user_profile(
+        user_id=user_id,
+        display_name=payload.display_name,
+        short_name=payload.short_name,
+        photo_url=payload.photo_url,
+        birth_date=payload.birth_date,
+        cpf=payload.cpf,
+        address=payload.address,
+    )
+    return profile
 
 @app.get("/workspaces")
 def list_workspaces(tenant: TenantContext = Depends(get_tenant_context)):
@@ -1436,6 +1728,14 @@ def remove_workspace_member(
     member_user_id: str,
     tenant: TenantContext = Depends(get_tenant_context),
 ):
+    """Remove a member from a workspace.
+
+    Behavior when a member is deleted:
+    - Their past transactions remain intact (the ``owner`` field keeps their display name).
+    - They immediately lose access to the workspace.
+    - The dashboard continues to show their historical transactions under their owner name.
+    This is intentional: transaction history is preserved for financial accuracy.
+    """
     user_id = _require_authenticated_user(tenant)
     owner_membership = _get_workspace_member(workspace_id, user_id)
     if not owner_membership:
@@ -1502,10 +1802,19 @@ def create_workspace_invite(
 
     limits = _plan_limits(profile.get("plan_type", "free"))
     member_count = _count_workspace_members(workspace_id)
+
+    # --- Plan limit check: members (via billing service) ---
+    if not _billing_service.check_limit(workspace_id, "members"):
+        billing_limit = _billing_service.get_plan_limit(workspace_id, "members")
+        raise HTTPException(
+            status_code=402,
+            detail=f"Member limit reached ({billing_limit} members). Upgrade your plan to invite more members.",
+        )
+
     if member_count >= limits["max_members_per_workspace"]:
         raise HTTPException(
-            status_code=400,
-            detail=f"Plan {profile.get('plan_type')} supports up to {limits['max_members_per_workspace']} members per workspace.",
+            status_code=402,
+            detail=f"Plan {profile.get('plan_type')} supports up to {limits['max_members_per_workspace']} members per workspace. Upgrade your plan.",
         )
     invite = _create_workspace_invite(
         workspace_id=workspace_id,
@@ -1561,8 +1870,17 @@ def accept_invite(invite_id: str, tenant: TenantContext = Depends(get_tenant_con
         owner_limits = _plan_limits(owner_profile.get("plan_type", "free"))
         member_count = _count_workspace_members(workspace_id)
         existing_member = _get_workspace_member(workspace_id, user_id)
+
+        # --- Plan limit check: members (via billing service) ---
+        if not existing_member and not _billing_service.check_limit(workspace_id, "members"):
+            billing_limit = _billing_service.get_plan_limit(workspace_id, "members")
+            raise HTTPException(
+                status_code=402,
+                detail=f"Workspace member limit reached ({billing_limit} members). Upgrade the workspace plan.",
+            )
+
         if not existing_member and member_count >= owner_limits["max_members_per_workspace"]:
-            raise HTTPException(status_code=400, detail="Workspace member limit reached")
+            raise HTTPException(status_code=402, detail="Workspace member limit reached. Upgrade the workspace plan.")
 
         _add_workspace_member(workspace_id, user_id, "member")
         accepted_workspace_id = workspace_id
@@ -1597,99 +1915,428 @@ def accept_invite(invite_id: str, tenant: TenantContext = Depends(get_tenant_con
 
 
 @app.post("/upload")
-async def upload_invoice(
+async def upload_preview(
     file: UploadFile = File(...),
-    owner: str = Form(...),
-    month_ref: str = Form(...), # Format: YYYY-MM
+    owner: Optional[str] = Form(None),
+    month_ref: Optional[str] = Form(None),  # Format: YYYY-MM (optional — extracted from PDF)
     tenant: TenantContext = Depends(get_tenant_context),
 ):
-    """
-    Receives a CSV file, processes it, and saves to database.
-    In local mode: saves to SQLite.
-    In cloud mode: saves to GCS and BigQuery.
+    """Return a preview of extracted transactions without saving to the database.
+
+    Supports both PDF and CSV files.  For PDFs the ExtractionService is used;
+    for CSVs the existing TransactionProcessor parsing flow is kept.
+
+    The response includes suggested categories, card_type lookups and a list
+    of unregistered card last4 values so the frontend can prompt onboarding.
     """
     _require_data_access(tenant)
+    _require_tenant_id(tenant)
+
+    # --- Plan limit check: uploads/month ---
+    if not _billing_service.check_limit(tenant.tenant_id, "uploads_month"):
+        limit_val = _billing_service.get_plan_limit(tenant.tenant_id, "uploads_month")
+        raise HTTPException(
+            status_code=402,
+            detail=f"Upload limit reached ({limit_val}/month). Upgrade your plan for unlimited uploads.",
+        )
+
     try:
-        # 1. Validation
+        # 1. Validate file
         contents = await _validate_and_read_upload(file, "invoice")
-        ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-        
-        # 2. Save file (local or cloud)
-        if USE_SQLITE:
-            # Local mode: save to data/uploads folder
-            from pathlib import Path
-            upload_dir = Path(__file__).parent.parent / "data" / "uploads"
-            upload_dir.mkdir(parents=True, exist_ok=True)
-            
-            year, month = month_ref.split('-')
-            local_path = upload_dir / f"{tenant.tenant_id}_{owner}_{year}{month}_{ts}_{file.filename}"
-            
-            with open(local_path, 'wb') as f:
-                f.write(contents)
-            
-            file_path = str(local_path)
-            logger.info("File saved locally: %s", file_path)
-        else:
-            # Cloud mode: Upload to GCS Bronze
-            storage_client = storage.Client(project=PROJECT_ID)
-            bucket = storage_client.bucket(BUCKET_RAW)
-            
-            year, month = month_ref.split('-')
-            blob_name = f"bronze/{tenant.tenant_id}/{owner}/{year}/{month}/{ts}_{file.filename}"
-            
-            blob = bucket.blob(blob_name)
-            blob.upload_from_string(contents, content_type="text/csv")
-            
-            file_path = f"gs://{BUCKET_RAW}/{blob_name}"
-            logger.info("File uploaded to %s", file_path)
+        file_type = _detect_file_type(file.filename or "unknown.csv")
+        file_hash = hashlib.sha256(contents).hexdigest()
 
-        # 3. Process file and insert into database
-        processor = TransactionProcessor()
-        process_result = processor.process_file(contents, file.filename, owner, month_ref, tenant.tenant_id)
-        if isinstance(process_result, dict):
-            count = int(process_result.get("count", 0))
-            gold_rows = process_result.get("gold_rows") or []
-        else:
-            count = int(process_result or 0)
-            gold_rows = []
+        # 2. Build a card lookup from registered cards
+        workspace_id = tenant.tenant_id
+        registered_cards = _list_cards(workspace_id)
+        card_map: dict[str, str] = {}  # last4 -> card_type
+        card_owner_map: dict[str, str] = {}  # last4 -> owner
+        for card in registered_cards:
+            card_map[card.last4] = card.card_type
+            card_owner_map[card.last4] = card.owner
 
-        # Keep Firestore in sync so /transactions can list uploaded rows immediately.
-        if not USE_SQLITE and db_firestore is not None and gold_rows:
-            batch = db_firestore.batch()
-            op_count = 0
-            for row in gold_rows:
-                doc_id = row.get("id")
-                if not doc_id:
+        # 3. Classification service
+        from categories import ClassificationService as _ClassSvc
+        cls_svc = _ClassSvc()
+
+        if file_type == "pdf":
+            # --- PDF path: use ExtractionService ---
+            extracted = _extraction_service.extract(contents)
+
+            preview_txns: List[PreviewTransaction] = []
+            unregistered_cards_set: set[str] = set()
+
+            for section in extracted.sections:
+                for tx in section.transactions:
+                    card_last4 = tx.card_last4
+                    suggested_type: Optional[str] = None
+                    needs_review = False
+
+                    if card_last4 and card_last4 in card_map:
+                        suggested_type = card_map[card_last4]
+                    elif card_last4:
+                        unregistered_cards_set.add(card_last4)
+                        needs_review = True
+
+                    # Classify using the new SaaS ClassificationService
+                    from normalization import normalize_merchant as _norm_merchant
+                    merchant_clean = _norm_merchant(tx.description)
+                    classification = cls_svc.classify(merchant_clean, workspace_id)
+                    if classification.needs_review:
+                        needs_review = True
+
+                    preview_txns.append(PreviewTransaction(
+                        date=tx.date,
+                        card_last4=card_last4,
+                        description=tx.description,
+                        amount=tx.amount,
+                        is_refund=tx.is_refund,
+                        suggested_category=classification.category,
+                        suggested_type=suggested_type,
+                        needs_review=needs_review,
+                    ))
+
+            # Extract holder_name from first section owner or statement holder
+            holder_name = extracted.holder_name
+
+            return UploadPreviewResponse(
+                file_hash=file_hash,
+                statement_type=extracted.statement_type,
+                bank=extracted.bank,
+                holder_name=holder_name,
+                period_start=extracted.period_start,
+                period_end=extracted.period_end,
+                total_amount=extracted.total_amount,
+                transactions=preview_txns,
+                unregistered_cards=sorted(unregistered_cards_set),
+            )
+
+        else:
+            # --- CSV path: parse with pandas, return preview ---
+            import io
+            import pandas as pd
+            from normalization import normalize_merchant as _norm_merchant
+
+            df = pd.read_csv(io.BytesIO(contents))
+
+            # Detect columns
+            date_col = "date" if "date" in df.columns else ("Data" if "Data" in df.columns else None)
+            amt_col = "amount" if "amount" in df.columns else ("Valor" if "Valor" in df.columns else None)
+            merch_col = "title" if "title" in df.columns else ("Observações" if "Observações" in df.columns else None)
+
+            if not all([date_col, amt_col, merch_col]):
+                raise HTTPException(status_code=422, detail="CSV must contain date/Data, amount/Valor, and title/Observações columns")
+
+            # Derive month_ref from first row if not provided
+            effective_month_ref = month_ref
+            if not effective_month_ref and len(df) > 0:
+                first_date = str(df.iloc[0][date_col])
+                try:
+                    if "-" in first_date:
+                        parts = first_date.split("-")
+                        effective_month_ref = f"{parts[0]}-{parts[1]}"
+                    elif "/" in first_date:
+                        parts = first_date.split("/")
+                        effective_month_ref = f"{parts[2]}-{parts[1]}"
+                except Exception:
+                    effective_month_ref = datetime.datetime.now().strftime("%Y-%m")
+            if not effective_month_ref:
+                effective_month_ref = datetime.datetime.now().strftime("%Y-%m")
+
+            preview_txns = []
+            unregistered_cards_set: set[str] = set()
+
+            for _, row in df.iterrows():
+                description = str(row[merch_col]).strip()
+                if description.lower() == "nan" or "Pagamento recebido" in description:
                     continue
-                payload = dict(row)
-                payload["tenant_id"] = payload.get("tenant_id") or tenant.tenant_id
-                ref = db_firestore.collection(FIRESTORE_COLLECTION).document(doc_id)
-                batch.set(ref, payload, merge=True)
-                op_count += 1
-                if op_count % 400 == 0:
+
+                val_str = str(row[amt_col]).strip()
+                if "," in val_str:
+                    val_str = val_str.replace(".", "").replace(",", ".")
+                try:
+                    amount = abs(float(val_str))
+                except Exception:
+                    amount = 0.0
+
+                date_str = str(row[date_col]).strip()
+
+                merchant_clean = _norm_merchant(description)
+                classification = cls_svc.classify(merchant_clean, workspace_id)
+
+                # CSV rows don't have card_last4 by default
+                card_last4 = str(row.get("card_last4", "")).strip() if "card_last4" in df.columns else None
+                if card_last4 and card_last4.lower() == "nan":
+                    card_last4 = None
+
+                suggested_type: Optional[str] = None
+                needs_review = classification.needs_review
+
+                if card_last4 and card_last4 in card_map:
+                    suggested_type = card_map[card_last4]
+                elif card_last4:
+                    unregistered_cards_set.add(card_last4)
+                    needs_review = True
+
+                preview_txns.append(PreviewTransaction(
+                    date=date_str,
+                    card_last4=card_last4,
+                    description=description,
+                    amount=amount,
+                    is_refund=False,
+                    suggested_category=classification.category,
+                    suggested_type=suggested_type,
+                    needs_review=needs_review,
+                ))
+
+            # Derive period from data
+            period_start = effective_month_ref + "-01"
+            try:
+                import calendar
+                y, m = map(int, effective_month_ref.split("-"))
+                last_day = calendar.monthrange(y, m)[1]
+                period_end = f"{effective_month_ref}-{last_day:02d}"
+            except Exception:
+                period_end = effective_month_ref + "-31"
+
+            total_amount = sum(t.amount for t in preview_txns)
+
+            return UploadPreviewResponse(
+                file_hash=file_hash,
+                statement_type="credit_card",
+                bank="CSV Import",
+                holder_name=owner or "Unknown",
+                period_start=period_start,
+                period_end=period_end,
+                total_amount=round(total_amount, 2),
+                transactions=preview_txns,
+                unregistered_cards=sorted(unregistered_cards_set),
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Upload preview error: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/upload/confirm")
+async def upload_confirm(
+    body: UploadConfirmRequest,
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """Save confirmed (and possibly user-edited) transactions to the database.
+
+    Cross-references ``card_last4`` with registered cards to determine
+    ``card_type``, classifies categories via ``ClassificationService``,
+    and records the upload in ``upload_history``.
+    """
+    _require_data_access(tenant)
+    _require_tenant_id(tenant)
+    try:
+        workspace_id = tenant.tenant_id
+        user_id = tenant.user_id or "anonymous"
+
+        # 1. Build card lookup
+        registered_cards = _list_cards(workspace_id)
+        card_map: dict[str, str] = {}  # last4 -> card_type
+        for card in registered_cards:
+            card_map[card.last4] = card.card_type
+
+        # 2. Classification service
+        from categories import ClassificationService as _ClassSvc
+        from normalization import normalize_merchant as _norm_merchant
+        cls_svc = _ClassSvc()
+
+        upload_id = f"upload-{uuid.uuid4().hex[:16]}"
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        saved_count = 0
+        warnings: List[str] = []
+
+        if USE_SQLITE:
+            conn = get_db_connection()
+            c = conn.cursor()
+
+            for tx in body.transactions:
+                tx_id = f"tx-{uuid.uuid4().hex[:16]}"
+
+                # Determine card_type from registered cards
+                card_type: Optional[str] = None
+                needs_review = False
+                if tx.card_last4 and tx.card_last4 in card_map:
+                    card_type = card_map[tx.card_last4]
+                elif tx.card_last4:
+                    needs_review = True
+                    warnings.append(f"Card {tx.card_last4} not registered")
+
+                # Classify category using ClassificationService
+                merchant_clean = _norm_merchant(tx.description)
+                classification = cls_svc.classify(merchant_clean, workspace_id)
+
+                # Use user-provided category if available, otherwise use classification
+                final_category = tx.category if tx.category else classification.category
+                if classification.needs_review and not tx.category:
+                    needs_review = True
+
+                # Derive month_ref from date
+                try:
+                    date_parts = tx.date.split("-")
+                    month_ref = f"{date_parts[0]}-{date_parts[1]}"
+                except Exception:
+                    month_ref = datetime.datetime.now().strftime("%Y-%m")
+
+                try:
+                    c.execute(
+                        """
+                        INSERT OR REPLACE INTO transactions_gold
+                        (id, tenant_id, date, month_ref, amount, merchant_clean,
+                         category, subcategory, owner, type, created_at,
+                         card_last4, card_type, is_refund, transaction_source,
+                         upload_id, needs_review)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            tx_id,
+                            workspace_id,
+                            tx.date,
+                            month_ref,
+                            tx.amount,
+                            merchant_clean,
+                            final_category,
+                            None,  # subcategory
+                            tx.owner,
+                            card_type,  # type = card_type
+                            now,
+                            tx.card_last4,
+                            card_type,
+                            1 if tx.is_refund else 0,
+                            "pdf_extraction",
+                            upload_id,
+                            1 if needs_review else 0,
+                        ),
+                    )
+                    saved_count += 1
+                except Exception as e:
+                    logger.error("Error inserting transaction: %s", e)
+                    warnings.append(f"Failed to save transaction: {tx.description}")
+
+            # 3. Register in upload_history
+            # Derive period from transactions
+            dates = [tx.date for tx in body.transactions if tx.date]
+            period_start = min(dates) if dates else ""
+            period_end = max(dates) if dates else ""
+
+            upload_history_id = f"uh-{uuid.uuid4().hex[:16]}"
+            c.execute(
+                """
+                INSERT INTO upload_history
+                (id, workspace_id, user_id, filename, file_hash, file_size_bytes,
+                 statement_type, bank, period_start, period_end,
+                 transactions_count, status, error_message, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    upload_history_id,
+                    workspace_id,
+                    user_id,
+                    f"upload_{body.file_hash[:8]}",
+                    body.file_hash,
+                    None,  # file_size_bytes — not available at confirm time
+                    "credit_card",  # default; could be refined
+                    None,  # bank — not available at confirm time
+                    period_start,
+                    period_end,
+                    saved_count,
+                    "completed",
+                    None,
+                    now,
+                ),
+            )
+
+            conn.commit()
+            conn.close()
+        else:
+            # Cloud mode — Firestore + BigQuery
+            if db_firestore is not None:
+                batch = db_firestore.batch()
+                op_count = 0
+
+                for tx in body.transactions:
+                    tx_id = f"tx-{uuid.uuid4().hex[:16]}"
+
+                    card_type = None
+                    needs_review = False
+                    if tx.card_last4 and tx.card_last4 in card_map:
+                        card_type = card_map[tx.card_last4]
+                    elif tx.card_last4:
+                        needs_review = True
+
+                    merchant_clean = _norm_merchant(tx.description)
+                    classification = cls_svc.classify(merchant_clean, workspace_id)
+                    final_category = tx.category if tx.category else classification.category
+                    if classification.needs_review and not tx.category:
+                        needs_review = True
+
+                    try:
+                        date_parts = tx.date.split("-")
+                        month_ref = f"{date_parts[0]}-{date_parts[1]}"
+                    except Exception:
+                        month_ref = datetime.datetime.now().strftime("%Y-%m")
+
+                    payload = {
+                        "id": tx_id,
+                        "tenant_id": workspace_id,
+                        "date": tx.date,
+                        "month_ref": month_ref,
+                        "amount": tx.amount,
+                        "merchant_clean": merchant_clean,
+                        "category": final_category,
+                        "subcategory": None,
+                        "owner": tx.owner,
+                        "type": card_type,
+                        "created_at": now,
+                        "card_last4": tx.card_last4,
+                        "card_type": card_type,
+                        "is_refund": tx.is_refund,
+                        "transaction_source": "pdf_extraction",
+                        "upload_id": upload_id,
+                        "needs_review": needs_review,
+                    }
+
+                    ref = db_firestore.collection(FIRESTORE_COLLECTION).document(tx_id)
+                    batch.set(ref, payload, merge=True)
+                    op_count += 1
+                    saved_count += 1
+
+                    if op_count % 400 == 0:
+                        batch.commit()
+                        batch = db_firestore.batch()
+
+                if op_count % 400 != 0:
                     batch.commit()
-                    batch = db_firestore.batch()
-            if op_count % 400 != 0:
-                batch.commit()
-            logger.info("Synced %d uploaded rows to Firestore", op_count)
-        
-        # Invalidate dashboard cache for this tenant
-        dashboard_cache.invalidate_prefix(f"dashboard:{tenant.tenant_id}:")
+
+        # Invalidate dashboard cache
+        dashboard_cache.invalidate_prefix(f"dashboard:{workspace_id}:")
 
         return {
-            "status": "success", 
-            "file_path": file_path,
-            "processed_rows": count
+            "status": "success",
+            "upload_id": upload_id,
+            "saved_count": saved_count,
+            "warnings": warnings,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error("Error: %s", e)
+        logger.error("Upload confirm error: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/net-worth/upload")
 async def upload_net_worth(
     file: UploadFile = File(...),
-    owner: str = Form(OWNERS[0] if OWNERS else "Victor"),
+    owner: str = Form("default"),
     tenant: TenantContext = Depends(get_tenant_context),
 ):
     """
@@ -1698,6 +2345,7 @@ async def upload_net_worth(
     This is currently treated as a manual input source (one snapshot per month).
     """
     _require_data_access(tenant)
+    _require_tenant_id(tenant)
 
     owner_name = _normalize_owner(owner)
 
@@ -1857,6 +2505,7 @@ def get_net_worth(
     Params start/end are optional (YYYY-MM).
     """
     _require_data_access(tenant)
+    _require_tenant_id(tenant)
     start_month = start
     end_month = end
     owner_name = _normalize_owner(owner) if owner else None
@@ -1898,7 +2547,7 @@ def get_net_worth(
             if not month_ref:
                 continue
             row_owner = data.get("owner")
-            default_owner = OWNERS[0] if OWNERS else "Victor"
+            default_owner = _get_workspace_owner_names(tenant.tenant_id)[0]
             if owner_name:
                 if not row_owner:
                     # Legacy rows (before owner field) default to first configured owner.
@@ -1925,13 +2574,14 @@ def get_net_worth(
 def update_net_worth_row(
     month_ref: str,
     payload: NetWorthRowUpdate,
-    owner: str = OWNERS[0] if OWNERS else "Victor",
+    owner: str = "default",
     tenant: TenantContext = Depends(get_tenant_context),
 ):
     """
     Manual editor for one month row in patrimônio.
     """
     _require_data_access(tenant)
+    _require_tenant_id(tenant)
     if not re.fullmatch(r"\d{4}-\d{2}", month_ref):
         raise HTTPException(status_code=400, detail="month_ref must be in YYYY-MM format")
 
@@ -2044,7 +2694,7 @@ def update_net_worth_row(
 def get_net_worth_validation(
     start: str = None,
     end: str = None,
-    owner: str = OWNERS[0] if OWNERS else "Victor",
+    owner: str = "default",
     tenant: TenantContext = Depends(get_tenant_context),
 ):
     """
@@ -2054,6 +2704,7 @@ def get_net_worth_validation(
     - manual patrimônio row values (when available)
     """
     _require_data_access(tenant)
+    _require_tenant_id(tenant)
     owner_name = _normalize_owner(owner)
 
     def month_allowed(month_ref: str) -> bool:
@@ -2216,6 +2867,7 @@ async def upload_current_account(
     2) generate spending transactions from outgoing movements (excluding card bill payment)
     """
     _require_data_access(tenant)
+    _require_tenant_id(tenant)
     owner_name = _normalize_owner(owner)
     if not re.fullmatch(r"\d{4}-\d{2}", month_ref):
         raise HTTPException(status_code=400, detail="month_ref must be in YYYY-MM format")
@@ -2399,6 +3051,7 @@ def get_transactions(
     Supports pagination via limit/offset (default: 200 per page).
     """
     _require_data_access(tenant)
+    _require_tenant_id(tenant)
     end_month = end or start
     limit = max(1, min(limit, 1000))  # clamp between 1 and 1000
     offset = max(0, offset)
@@ -2493,6 +3146,7 @@ def get_transactions(
     # FIRESTORE MODE (Cloud)
     try:
         query = db_firestore.collection(FIRESTORE_COLLECTION)
+        query = query.where("tenant_id", "==", tenant.tenant_id)
         query = query.where("month_ref", ">=", start).where("month_ref", "<=", end_month)
 
         docs = query.stream()
@@ -2500,11 +3154,7 @@ def get_transactions(
         for doc in docs:
             data = doc.to_dict() or {}
             data["id"] = doc.id
-
-            doc_tenant = data.get("tenant_id") or DEFAULT_TENANT_ID
-            if doc_tenant != tenant.tenant_id:
-                continue
-            data["tenant_id"] = doc_tenant
+            data["tenant_id"] = tenant.tenant_id
 
             if owner and data.get("owner") != owner:
                 continue
@@ -2551,6 +3201,7 @@ def update_transaction(
     Update any field of a transaction.
     """
     _require_data_access(tenant)
+    _require_tenant_id(tenant)
     # SQLITE MODE
     if USE_SQLITE:
         conn = get_db_connection()
@@ -2626,78 +3277,17 @@ def update_transaction(
         if not update_dict:
             return {"status": "no changes"}
 
-        def _fetch_bigquery_transaction():
-            if bq_client is None:
-                return None
-            fetch_query = f"""
-                SELECT id, date, month_ref, amount, merchant_clean, category, subcategory, owner, type, tenant_id, created_at
-                FROM `{TABLE_GOLD}`
-                WHERE id = @id AND tenant_id = @tenant_id
-                LIMIT 1
-            """
-            fetch_config = bigquery.QueryJobConfig(
-                query_parameters=[
-                    bigquery.ScalarQueryParameter("id", "STRING", transaction_id),
-                    bigquery.ScalarQueryParameter("tenant_id", "STRING", tenant.tenant_id),
-                ]
-            )
-            rows = [dict(row) for row in bq_client.query(fetch_query, job_config=fetch_config)]
-            return rows[0] if rows else None
-
-        def _update_bigquery_transaction():
-            if bq_client is None:
-                return
-            field_types = {
-                "date": "STRING",
-                "month_ref": "STRING",
-                "amount": "FLOAT64",
-                "merchant_clean": "STRING",
-                "category": "STRING",
-                "subcategory": "STRING",
-                "owner": "STRING",
-                "type": "STRING",
-            }
-            set_clauses = []
-            query_parameters = [
-                bigquery.ScalarQueryParameter("id", "STRING", transaction_id),
-                bigquery.ScalarQueryParameter("tenant_id", "STRING", tenant.tenant_id),
-            ]
-            for field, value in update_dict.items():
-                set_clauses.append(f"{field} = @{field}")
-                query_parameters.append(
-                    bigquery.ScalarQueryParameter(field, field_types[field], value)
-                )
-            update_query = f"""
-                UPDATE `{TABLE_GOLD}`
-                SET {', '.join(set_clauses)}
-                WHERE id = @id AND tenant_id = @tenant_id
-            """
-            update_config = bigquery.QueryJobConfig(query_parameters=query_parameters)
-            bq_client.query(update_query, job_config=update_config).result()
-
+        # Firestore-only update — BigQuery is synced separately via the sync button.
         doc_ref = db_firestore.collection(FIRESTORE_COLLECTION).document(transaction_id)
         doc = doc_ref.get()
-        if doc.exists:
-            current_data = doc.to_dict() or {}
-            if (current_data.get("tenant_id") or DEFAULT_TENANT_ID) != tenant.tenant_id:
-                raise HTTPException(status_code=404, detail="Transaction not found")
-            doc_ref.update({**update_dict, "updated_at": datetime.datetime.now().isoformat()})
-            _update_bigquery_transaction()
-            dashboard_cache.invalidate_prefix(f"dashboard:{tenant.tenant_id}:")
-            return {"status": "updated", "id": transaction_id}
-
-        existing_bq = _fetch_bigquery_transaction()
-        if not existing_bq:
+        if not doc.exists:
             raise HTTPException(status_code=404, detail="Transaction not found")
 
-        _update_bigquery_transaction()
+        current_data = doc.to_dict() or {}
+        if (current_data.get("tenant_id") or DEFAULT_TENANT_ID) != tenant.tenant_id:
+            raise HTTPException(status_code=404, detail="Transaction not found")
 
-        merged_payload = dict(existing_bq)
-        merged_payload.update(update_dict)
-        merged_payload["tenant_id"] = tenant.tenant_id
-        merged_payload["created_at"] = merged_payload.get("created_at") or datetime.datetime.now().isoformat()
-        merged_payload["updated_at"] = datetime.datetime.now().isoformat()
-        doc_ref.set(merged_payload, merge=True)
+        doc_ref.update({**update_dict, "updated_at": datetime.datetime.now().isoformat()})
 
         dashboard_cache.invalidate_prefix(f"dashboard:{tenant.tenant_id}:")
         return {"status": "updated", "id": transaction_id}
@@ -2713,6 +3303,7 @@ def create_transaction(tx: TransactionCreate, tenant: TenantContext = Depends(ge
     Create a new transaction.
     """
     _require_data_access(tenant)
+    _require_tenant_id(tenant)
     import uuid
     import datetime as dt
     
@@ -2778,6 +3369,7 @@ def delete_transaction(transaction_id: str, tenant: TenantContext = Depends(get_
     Delete a transaction by ID.
     """
     _require_data_access(tenant)
+    _require_tenant_id(tenant)
     # SQLITE MODE
     if USE_SQLITE:
         conn = get_db_connection()
@@ -2892,6 +3484,7 @@ def get_dashboard_summary(
     Results are cached for 5 minutes per tenant+params combination.
     """
     _require_data_access(tenant)
+    _require_tenant_id(tenant)
     end_month = end or start
     if end_month < start:
         start, end_month = end_month, start
@@ -2906,6 +3499,8 @@ def get_dashboard_summary(
         conn = get_db_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
+
+        workspace_owners = _get_workspace_owner_names(tenant.tenant_id)
         
         # Helper to query totals
         def get_total_spend_sqlite(s_date, e_date):
@@ -2929,8 +3524,6 @@ def get_dashboard_summary(
             """, p)
             rows = c.fetchall()
             result = {'total_spend': 0}
-            for o in OWNERS:
-                result[f'{o}_spend'] = 0
             for r in rows:
                 o_name = r['owner']
                 o_spend = r['owner_spend'] or 0
@@ -3000,11 +3593,11 @@ def get_dashboard_summary(
                 paid_by_owner[row['owner']] = row['shared_paid'] or 0
                 
             total_shared = sum(paid_by_owner.values())
-            num_owners = len(OWNERS) if OWNERS else 2
+            num_owners = len(workspace_owners) if workspace_owners else 2
             fair_share = total_shared / num_owners if total_shared > 0 else 0
             
             # Find who owes whom (simplified: largest overpayer vs largest underpayer)
-            balances = {o: paid_by_owner.get(o, 0) - fair_share for o in OWNERS}
+            balances = {o: paid_by_owner.get(o, 0) - fair_share for o in workspace_owners}
             overpayers = {o: b for o, b in balances.items() if b > 0}
             underpayers = {o: b for o, b in balances.items() if b < 0}
             
@@ -3026,7 +3619,7 @@ def get_dashboard_summary(
                     "value": current_totals.get(f'{o}_spend', 0),
                     "value_last_year": last_year_totals.get(f'{o}_spend', 0),
                 }
-                for o in OWNERS
+                for o in workspace_owners
             ],
             "spend_by_category": [{"name": r['category'] or "Outros", "value": r['value']} for r in result_cat],
             "settlement": {
@@ -3049,11 +3642,13 @@ def get_dashboard_summary(
             filtered = [tx for tx in filtered if tx.get('owner') == owner]
         if tx_type:
             filtered = [tx for tx in filtered if tx.get('type') == tx_type]
+
+        mock_owners = _get_workspace_owner_names(tenant.tenant_id)
         
         if not filtered:
             return {
                 "total_spend": 0,
-                "spend_by_person": [{"name": o, "value": 0} for o in OWNERS],
+                "spend_by_person": [{"name": o, "value": 0} for o in mock_owners],
                 "spend_by_category": [],
                 "settlement": {
                     "direction": "Sem pendências",
@@ -3064,7 +3659,7 @@ def get_dashboard_summary(
         # Calculate totals per owner
         total_spend = sum(tx.get('amount', 0) for tx in filtered)
         spend_per_owner = {}
-        for o in OWNERS:
+        for o in mock_owners:
             spend_per_owner[o] = sum(tx.get('amount', 0) for tx in filtered if tx.get('owner') == o)
         
         # Calculate by category
@@ -3084,14 +3679,14 @@ def get_dashboard_summary(
         else:
             shared_txs = [tx for tx in filtered if tx.get('type') == 'Shared']
             shared_per_owner = {}
-            for o in OWNERS:
+            for o in mock_owners:
                 shared_per_owner[o] = sum(tx.get('amount', 0) for tx in shared_txs if tx.get('owner') == o)
             
             total_shared = sum(shared_per_owner.values())
-            num_owners = len(OWNERS) if OWNERS else 2
+            num_owners = len(mock_owners) if mock_owners else 2
             fair_share = total_shared / num_owners if total_shared > 0 else 0
             
-            balances = {o: shared_per_owner.get(o, 0) - fair_share for o in OWNERS}
+            balances = {o: shared_per_owner.get(o, 0) - fair_share for o in mock_owners}
             overpayers = {o: b for o, b in balances.items() if b > 0}
             underpayers = {o: b for o, b in balances.items() if b < 0}
             
@@ -3108,7 +3703,7 @@ def get_dashboard_summary(
             "total_spend": total_spend,
             "spend_by_person": [
                 {"name": o, "value": spend_per_owner.get(o, 0)}
-                for o in OWNERS
+                for o in mock_owners
             ],
             "spend_by_category": spend_by_category,
             "settlement": {
@@ -3121,6 +3716,8 @@ def get_dashboard_summary(
     
     # BIGQUERY MODE
     try:
+        bq_owners = _get_workspace_owner_names(tenant.tenant_id)
+
         # Helper to query totals per owner
         def get_totals_bq(s_date, e_date):
             q_totals = f"""
@@ -3159,8 +3756,6 @@ def get_dashboard_summary(
             conf_t = bigquery.QueryJobConfig(query_parameters=params_t)
             rows = list(bq_client.query(q_totals, job_config=conf_t))
             result = {'total_spend': 0}
-            for o in OWNERS:
-                result[f'{o}_spend'] = 0
             for r in rows:
                 o_name = r.owner
                 o_spend = r.owner_spend or 0
@@ -3241,10 +3836,10 @@ def get_dashboard_summary(
                 paid_by_owner[row['owner']] = row['shared_paid'] or 0
 
             total_shared = sum(paid_by_owner.values())
-            num_owners = len(OWNERS) if OWNERS else 2
+            num_owners = len(bq_owners) if bq_owners else 2
             fair_share = total_shared / num_owners if total_shared > 0 else 0
 
-            balances = {o: paid_by_owner.get(o, 0) - fair_share for o in OWNERS}
+            balances = {o: paid_by_owner.get(o, 0) - fair_share for o in bq_owners}
             overpayers = {o: b for o, b in balances.items() if b > 0}
             underpayers = {o: b for o, b in balances.items() if b < 0}
 
@@ -3266,7 +3861,7 @@ def get_dashboard_summary(
                     "value": current.get(f'{o}_spend', 0),
                     "value_last_year": last_year.get(f'{o}_spend', 0),
                 }
-                for o in OWNERS
+                for o in bq_owners
             ],
             "spend_by_category": [{"name": r['category'], "value": r['value']} for r in result_cat],
             "settlement": {
@@ -3296,6 +3891,7 @@ def get_trend_data(
     - Monthly aggregation for longer ranges
     """
     _require_data_access(tenant)
+    _require_tenant_id(tenant)
     from datetime import datetime, timedelta
     
     end_month = end or start
@@ -3420,6 +4016,7 @@ def sync_firestore_to_bigquery(tenant: TenantContext = Depends(get_tenant_contex
     Uses tenant-scoped DELETE + batch load to avoid cross-tenant data loss.
     """
     _require_data_access(tenant)
+    _require_tenant_id(tenant)
     # Only works in cloud mode
     if USE_SQLITE or USE_MOCK:
         return {"status": "skipped", "message": "Sync only available in cloud mode", "synced_count": 0}
@@ -3428,14 +4025,14 @@ def sync_firestore_to_bigquery(tenant: TenantContext = Depends(get_tenant_contex
         raise HTTPException(status_code=500, detail="Cloud clients not initialized")
     
     try:
-        # 1. Read Firestore and keep only this tenant
-        docs = db_firestore.collection(FIRESTORE_COLLECTION).stream()
+        # 1. Read Firestore — filter by tenant_id at the query level
+        docs = db_firestore.collection(FIRESTORE_COLLECTION).where(
+            "tenant_id", "==", tenant.tenant_id
+        ).stream()
         
         firestore_transactions = []
         for doc in docs:
             data = doc.to_dict() or {}
-            if (data.get("tenant_id") or DEFAULT_TENANT_ID) != tenant.tenant_id:
-                continue
             data['id'] = doc.id
             firestore_transactions.append(data)
         

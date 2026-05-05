@@ -4,14 +4,13 @@ Unified classification service.
 Consolidates all classification logic into a single module:
 - Merchant normalization (from normalization.py / merchant_map.json)
 - Category mapping (from category_mapping.py / category_map.json)
-- Type inference (from classifier.py keyword rules + history)
-- ML model predictions (from type_model.py)
+- Type inference (placeholder — will be replaced by card_type lookup in categories.py)
 
 Usage:
     from classification_service import ClassificationService
     svc = ClassificationService()
-    result = svc.classify("Uber *Trip", amount=25.0, owner="Victor")
-    # -> {"category": "Uber/Onibus", "type": "Shared", "merchant_norm": "Uber"}
+    result = svc.classify("Uber *Trip", amount=25.0, owner="user@example.com")
+    # -> {"category": "Uber/Onibus", "type": None, "merchant_norm": "Uber"}
 """
 import logging
 import os
@@ -73,33 +72,15 @@ CATEGORY_KEYWORDS.update({
     "Luana": ["luana"],
 })
 
-# ─── Type inference rules ───
-ALWAYS_SHARED_CATEGORIES = [
-    "Aluguel", "Condominio", "Luz/Internet", "Faxina",
-    "Streaming", "Mercado", "ItensdeCasa", "Manutenção/Revisão",
-]
-ALWAYS_INDIVIDUAL_CATEGORIES = [
-    "Projeto Pessoal", "Vestuário", "Curso", "Luana", "Saúde/Estética",
-]
-FORCE_SHARED_MERCHANTS = [
-    "nutag", "pedagio", "sem parar", "veloe", "conectcar",
-    "canva", "apple.com/bill",
-]
-SHARED_KEYWORDS = [
-    "aluguel", "condominio", "luz", "internet", "mercado", "supermercado",
-    "ifood", "delivery", "netflix", "amazon prime", "spotify",
-    "combustivel", "posto", "pedagio", "nutag", "uber",
-    "restaurante", "airbnb", "hotel", "voo", "passagem",
-]
-VICTOR_INDIVIDUAL_KEYWORDS = [
-    "barbeiro", "barbearia", "cerveja artesanal", "futebol", "joga10",
-    "arena resenha", "gio barbeiro", "vila pompeia", "totalpass",
-    "linkedin", "chatgpt", "openai", "github", "digital ocean",
-]
-
 
 class ClassificationService:
-    """Single entry-point for all transaction classification."""
+    """Single entry-point for all transaction classification.
+
+    NOTE: Type inference (Individual/Shared) is now determined by the
+    card_type of registered cards (see categories.py, task 7).  The
+    _infer_type() method returns None as a placeholder until that module
+    is integrated.
+    """
 
     def __init__(self):
         self._category_map = load_category_map()
@@ -110,7 +91,7 @@ class ClassificationService:
         self,
         description: str,
         amount: float = 0.0,
-        owner: str = "Victor",
+        owner: str = "",
         existing_category: Optional[str] = None,
     ) -> dict:
         """Return {"category": ..., "type": ..., "merchant_norm": ...}."""
@@ -123,7 +104,8 @@ class ClassificationService:
         if not category or category in ("Outro", "Outros"):
             category = self._category_from_keywords(description)
 
-        # 2. Type
+        # 2. Type — placeholder; will be determined by card_type from
+        #    registered cards once categories.py is integrated (task 7).
         tx_type = self._infer_type(description, amount, owner, category)
 
         return {
@@ -148,42 +130,15 @@ class ClassificationService:
         amount: float,
         owner: str,
         category: str,
-    ) -> str:
-        desc_lower = description.strip().lower()
+    ) -> Optional[str]:
+        """Placeholder for type inference.
 
-        # Rule 1: Force-shared merchants
-        for kw in FORCE_SHARED_MERCHANTS:
-            if kw.lower() in desc_lower:
-                return "Shared"
-
-        # Rule 2: Always-shared categories
-        if category in ALWAYS_SHARED_CATEGORIES:
-            return "Shared"
-
-        # Rule 3: Always-individual categories
-        if category in ALWAYS_INDIVIDUAL_CATEGORIES:
-            return "Individual"
-
-        # Rule 4: History lookup
-        shared_ratio, total = self._get_history_stats(description)
-        if total > 0:
-            if shared_ratio > 0.6:
-                return "Shared"
-            if amount > 80 and shared_ratio > 0.3:
-                return "Shared"
-            return "Individual"
-
-        # Rule 5: Keyword fallback
-        # Non-primary owners default to simpler keyword matching
-        if owner.strip().lower() not in ("victor",):
-            return "Shared" if any(k in desc_lower for k in SHARED_KEYWORDS) else "Individual"
-
-        if any(k in desc_lower for k in VICTOR_INDIVIDUAL_KEYWORDS):
-            return "Individual"
-        if any(k in desc_lower for k in SHARED_KEYWORDS) and amount > 50:
-            return "Shared"
-
-        return "Individual"
+        Type (Individual/Shared) will be determined by the card_type of
+        registered cards once the new categories.py module is integrated
+        (task 7).  For now, return None so callers know the type has not
+        been resolved yet.
+        """
+        return None
 
     @staticmethod
     def _get_history_stats(merchant_clean: str) -> tuple[float, int]:

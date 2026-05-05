@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blog — Victor Zoré</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+
+    <style>
+        :root {
+            --primary:    #db4a2b;
+            --bg:         #faf9f7;
+            --surface:    #ffffff;
+            --border:     #e8e3d8;
+            --text:       #2d2d2d;
+            --muted:      #6c757d;
+            --secondary:  #e4e0d7;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.7;
+        }
+
+        a { text-decoration: none; color: var(--primary); transition: color .2s; }
+
+        /* HEADER */
+        .header {
+            position: sticky; top: 0;
+            background: rgba(250,249,247,.95);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid var(--border);
+            padding: 15px 0;
+            z-index: 100;
+        }
+        .header__inner {
+            max-width: 1140px; margin: 0 auto; padding: 0 20px;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .header__logo { font-size: 1.4rem; font-weight: 700; color: var(--primary); }
+        .header__nav ul { display: flex; list-style: none; gap: 28px; }
+        .header__nav a { font-weight: 500; color: var(--text); }
+        .header__nav a:hover { color: var(--primary); }
+
+        /* HERO */
+        .hero {
+            max-width: 1140px; margin: 0 auto; padding: 64px 20px 40px;
+        }
+        .hero__label {
+            display: inline-block;
+            font-size: .8rem; font-weight: 700; letter-spacing: .08em;
+            text-transform: uppercase; color: var(--primary);
+            background: rgba(219,74,43,.08);
+            padding: 4px 12px; border-radius: 999px; margin-bottom: 16px;
+        }
+        .hero h1 {
+            font-size: 2.8rem; font-weight: 700; color: var(--primary);
+            line-height: 1.15; margin-bottom: 14px;
+        }
+        .hero p {
+            font-size: 1.1rem; color: var(--muted);
+            max-width: 560px; margin-bottom: 32px;
+        }
+
+        /* FILTROS */
+        .filters {
+            max-width: 1140px; margin: 0 auto; padding: 0 20px 36px;
+            display: flex; gap: 10px; flex-wrap: wrap;
+        }
+        .filter-btn {
+            padding: 7px 18px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: var(--surface);
+            font-family: 'Inter', sans-serif;
+            font-size: .85rem; font-weight: 500;
+            cursor: pointer; transition: all .2s;
+            color: var(--text);
+        }
+        .filter-btn:hover, .filter-btn.active {
+            background: var(--primary); color: #fff; border-color: var(--primary);
+        }
+
+        /* GRID */
+        .grid {
+            max-width: 1140px; margin: 0 auto; padding: 0 20px 80px;
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 28px;
+        }
+
+        /* CARD */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            display: flex; flex-direction: column;
+            transition: transform .25s, box-shadow .25s;
+            overflow: hidden;
+        }
+        .card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 12px 32px rgba(0,0,0,.08);
+        }
+        .card__thumb {
+            height: 180px; overflow: hidden; background: var(--secondary);
+            position: relative;
+        }
+        .card__thumb img { width: 100%; height: 100%; object-fit: cover; }
+        .card__bloco {
+            position: absolute; top: 14px; left: 14px;
+            font-size: .7rem; font-weight: 700; letter-spacing: .06em;
+            text-transform: uppercase; color: #fff;
+            background: rgba(0,0,0,.55);
+            padding: 3px 10px; border-radius: 999px;
+        }
+        .card__body { padding: 22px; display: flex; flex-direction: column; flex: 1; }
+        .card__num {
+            font-size: .75rem; font-weight: 700; color: var(--primary);
+            text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px;
+        }
+        .card__title {
+            font-size: 1.1rem; font-weight: 600; color: var(--text);
+            margin-bottom: 8px; line-height: 1.35;
+        }
+        .card__desc { font-size: .9rem; color: var(--muted); flex: 1; margin-bottom: 18px; }
+        .card__meta {
+            display: flex; gap: 14px;
+            font-size: .8rem; color: var(--muted); margin-bottom: 16px;
+        }
+        .card__meta i { margin-right: 4px; }
+        .card__link {
+            font-size: .9rem; font-weight: 600; color: var(--primary);
+            display: flex; align-items: center; gap: 6px;
+        }
+        .card__link:hover { color: #b83820; }
+
+        /* CARD BLOQUEADO */
+        .card--locked { opacity: .55; pointer-events: none; }
+        .card__badge {
+            font-size: .75rem; font-weight: 600; color: var(--muted);
+            display: flex; align-items: center; gap: 5px;
+        }
+
+        /* BLOCO HEADER */
+        .bloco-header {
+            max-width: 1140px; margin: 0 auto; padding: 0 20px 12px;
+        }
+        .bloco-header h2 {
+            font-size: 1rem; font-weight: 700; color: var(--muted);
+            text-transform: uppercase; letter-spacing: .08em;
+            border-bottom: 2px solid var(--border); padding-bottom: 8px;
+        }
+
+        /* FOOTER */
+        footer {
+            border-top: 1px solid var(--border);
+            background: #f5f3f0;
+            padding: 28px 20px;
+            text-align: center;
+            font-size: .9rem; color: var(--muted);
+        }
+        footer a { font-weight: 600; }
+
+        @media (max-width: 900px) {
+            .grid { grid-template-columns: repeat(2,1fr); }
+        }
+        @media (max-width: 600px) {
+            .grid { grid-template-columns: 1fr; }
+            .hero h1 { font-size: 2rem; }
+            .header__nav { display: none; }
+        }
+    </style>
+</head>
+<body>
+
+<header class="header">
+    <div class="header__inner">
+        <a href="../index.html" class="header__logo">éozoré.</a>
+        <nav class="header__nav">
+            <ul>
+                <li><a href="../index.html#home">Home</a></li>
+                <li><a href="../index.html#projetos">Projetos</a></li>
+                <li><a href="../index.html#timeline">Linha do Tempo</a></li>
+                <li><a href="#">Blog</a></li>
+            </ul>
+        </nav>
+    </div>
+</header>
+
+<main>
+    <div class="hero">
+        <span class="hero__label">Conteúdo</span>
+        <h1>Blog</h1>
+        <p>Estatística, ML e IA — dos dados à aplicação real em nuvem.
+    </div>
+
+    <div class="filters">
+        <button class="filter-btn active" onclick="filterCards('all', this)">Todos</button>
+        <button class="filter-btn" onclick="filterCards('estatistica', this)">Estatística</button>
+        <button class="filter-btn" onclick="filterCards('ml', this)">Machine Learning</button>
+        <button class="filter-btn" onclick="filterCards('cloud', this)">Cloud</button>
+        <button class="filter-btn" onclick="filterCards('genai', this)">IA Generativa</button>
+    </div>
+
+    <!-- BLOCO 1 -->
+    <div class="bloco-header"><h2>Bloco 1 — Fundação Estatística</h2></div>
+    <div class="grid" id="grid">
+
+        <div class="card" data-bloco="estatistica">
+            <div class="card__thumb">
+                <img src="../image/blog_variaveisaleatorias.jpg" alt="Variáveis Aleatórias">
+                <span class="card__bloco">Estatística</span>
+            </div>
+            <div class="card__body">
+                <span class="card__num">Artigo 1 de 28</span>
+                <h3 class="card__title">Variáveis Aleatórias</h3>
+                <p class="card__desc">O que é uma variável aleatória, tipos, notação científica e como modelar risco em produção com quantis.</p>
+                <div class="card__meta">
+                    <span><i class="fa-regular fa-calendar"></i> 01 Jun 2025</span>
+                    <span><i class="fa-regular fa-clock"></i> 8 min</span>
+                </div>
+                <a href="variaveisaleatorias.html" class="card__link" target="_blank" rel="noopener">Ler artigo <i class="fa-solid fa-arrow-right"></i></a>
+            </div>
+        </div>
+
+        <div class="card" data-bloco="estatistica">
+            <div class="card__thumb">
+                <img src="../image/blog_variaveisaleatorias.jpg" alt="Estatísticas Básicas">
+                <span class="card__bloco">Estatística</span>
+            </div>
+            <div class="card__body">
+                <span class="card__num">Artigo 2 de 28</span>
+                <h3 class="card__title">Estatísticas Básicas</h3>
+                <p class="card__desc">Média, mediana, variância, IQR, assimetria e curtose — e por que o CEO de uma fintech tomou a decisão errada confiando só na média.</p>
+                <div class="card__meta">
+                    <span><i class="fa-regular fa-calendar"></i> 08 Jun 2025</span>
+                    <span><i class="fa-regular fa-clock"></i> 9 min</span>
+                </div>
+                <a href="estatisticasbasicas.html" class="card__link" target="_blank" rel="noopener">Ler artigo <i class="fa-solid fa-arrow-right"></i></a>
+            </div>
+        </div>
+
+        <div class="card" data-bloco="estatistica">
+            <div class="card__thumb">
+                <img src="../image/blog_variaveisaleatorias.jpg" alt="Tabelas e Gráficos">
+                <span class="card__bloco">Estatística</span>
+            </div>
+            <div class="card__body">
+                <span class="card__num">Artigo 3 de 28</span>
+                <h3 class="card__title">Tabelas e Gráficos — Visualização de Dados</h3>
+                <p class="card__desc">Os principais tipos de visualização, quando usar cada um e como comunicar dados para públicos técnicos e executivos.</p>
+                <div class="card__meta">
+                    <span><i class="fa-regular fa-calendar"></i> 12 Jun 2025</span>
+                    <span><i class="fa-regular fa-clock"></i> 9 min</span>
+                </div>
+                <a href="tabelasegraficos.html" class="card__link" target="_blank" rel="noopener">Ler artigo <i class="fa-solid fa-arrow-right"></i></a>
+            </div>
+        </div>
+
+        <div class="card" data-bloco="estatistica">
+            <div class="card__thumb">
+                <img src="../image/blog_variaveisaleatorias.jpg" alt="Probabilidade e Distribuições">
+                <span class="card__bloco">Estatística</span>
+            </div>
+            <div class="card__body">
+                <span class="card__num">Artigo 4 de 28</span>
+                <h3 class="card__title">Probabilidade e Distribuições</h3>
+                <p class="card__desc">Teorema de Bayes, distribuições discretas e contínuas e como a escolha da distribuição define a função de perda do seu modelo.</p>
+                <div class="card__meta">
+                    <span><i class="fa-regular fa-calendar"></i> 22 Jun 2025</span>
+                    <span><i class="fa-regular fa-clock"></i> 11 min</span>
+                </div>
+                <a href="probabilidadedistribuicoes.html" class="card__link" target="_blank" rel="noopener">Ler artigo <i class="fa-solid fa-arrow-right"></i></a>
+            </div>
+        </div>
+
+        <div class="card card--locked" data-bloco="estatistica">
+            <div class="card__thumb">
+                <img src="../image/blog_variaveisaleatorias.jpg" alt="Amostragem">
+                <span class="card__bloco">Estatística</span>
+            </div>
+            <div class="card__body">
+                <span class="card__num">Artigo 5 de 28</span>
+                <h3 class="card__title">Amostragem e Inferência</h3>
+                <p class="card__desc">Por que uma pesquisa eleitoral pode errar mesmo com 10.000 respostas — viés de seleção, tamanho amostral e inferência estatística.</p>
+                <div class="card__meta">
+                    <span><i class="fa-regular fa-calendar"></i> Em breve</span>
+                </div>
+                <span class="card__badge"><i class="fa-solid fa-lock"></i> Em produção</span>
+            </div>
+        </div>
+
+        <div class="card card--locked" data-bloco="estatistica">
+            <div class="card__thumb">
+                <img src="../image/blog_variaveisaleatorias.jpg" alt="Correlação">
+                <span class="card__bloco">Estatística</span>
+            </div>
+            <div class="card__body">
+                <span class="card__num">Artigo 6 de 28</span>
+                <h3 class="card__title">Correlação, Covariância e Associação</h3>
+                <p class="card__desc">A diferença entre correlação e causalidade, Pearson vs Spearman e como isso impacta a seleção de features em modelos de ML.</p>
+                <div class="card__meta">
+                    <span><i class="fa-regular fa-calendar"></i> Em breve</span>
+                </div>
+                <span class="card__badge"><i class="fa-solid fa-lock"></i> Em produção</span>
+            </div>
+        </div>
+
+        <div class="card card--locked" data-bloco="estatistica">
+            <div class="card__thumb">
+                <img src="../image/blog_variaveisaleatorias.jpg" alt="Teste de Hipóteses">
+                <span class="card__bloco">Estatística</span>
+            </div>
+            <div class="card__body">
+                <span class="card__num">Artigo 7 de 28</span>
+                <h3 class="card__title">Teste de Hipóteses e Intervalos de Confiança</h3>
+                <p class="card__desc">p-valor, erro tipo I e II, testes A/B e como validar estatisticamente se um modelo realmente melhorou.</p>
+                <div class="card__meta">
+                    <span><i class="fa-regular fa-calendar"></i> Em breve</span>
+                </div>
+                <span class="card__badge"><i class="fa-solid fa-lock"></i> Em produção</span>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- BLOCO 2 -->
+    <div class="bloco-header"><h2>Bloco 2 — Modelagem Preditiva</h2></div>
+    <div class="grid">
+        <div class="card card--locked" data-bloco="ml">
+            <div class="card__thumb"><div style="height:100%;background:var(--secondary);"></div><span class="card__bloco">Machine Learning</span></div>
+            <div class="card__body">
+                <span class="card__num">Artigo 8 de 28</span>
+                <h3 class="card__title">Regressão Linear</h3>
+                <p class="card__desc">Mínimos quadrados, interpretação de coeficientes, R² e como usar regressão para precificação e previsão de demanda.</p>
+                <div class="card__meta"><span><i class="fa-regular fa-calendar"></i> Em breve</span></div>
+                <span class="card__badge"><i class="fa-solid fa-lock"></i> Em produção</span>
+            </div>
+        </div>
+        <div class="card card--locked" data-bloco="ml">
+            <div class="card__thumb"><div style="height:100%;background:var(--secondary);"></div><span class="card__bloco">Machine Learning</span></div>
+            <div class="card__body">
+                <span class="card__num">Artigo 9 de 28</span>
+                <h3 class="card__title">Regressão Logística</h3>
+                <p class="card__desc">Classificação binária, função sigmoide, odds ratio e aplicação em modelos de churn e crédito.</p>
+                <div class="card__meta"><span><i class="fa-regular fa-calendar"></i> Em breve</span></div>
+                <span class="card__badge"><i class="fa-solid fa-lock"></i> Em produção</span>
+            </div>
+        </div>
+        <div class="card card--locked" data-bloco="ml">
+            <div class="card__thumb"><div style="height:100%;background:var(--secondary);"></div><span class="card__bloco">Machine Learning</span></div>
+            <div class="card__body">
+                <span class="card__num">Artigo 10 de 28</span>
+                <h3 class="card__title">Árvores de Decisão e Florestas Aleatórias</h3>
+                <p class="card__desc">Como árvores aprendem regras, o problema do overfitting e por que Random Forest é o canivete suíço do ML.</p>
+                <div class="card__meta"><span><i class="fa-regular fa-calendar"></i> Em breve</span></div>
+                <span class="card__badge"><i class="fa-solid fa-lock"></i> Em produção</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- BLOCO 3 -->
+    <div class="bloco-header"><h2>Bloco 3 — ML Avançado e Engenharia</h2></div>
+    <div class="grid">
+        <div class="card card--locked" data-bloco="ml">
+            <div class="card__thumb"><div style="height:100%;background:var(--secondary);"></div><span class="card__bloco">Machine Learning</span></div>
+            <div class="card__body">
+                <span class="card__num">Artigo 14 de 28</span>
+                <h3 class="card__title">Pipeline de Dados — Do Raw ao Modelo</h3>
+                <p class="card__desc">Feature engineering, normalização, encoding e como estruturar um pipeline reproduzível para produção.</p>
+                <div class="card__meta"><span><i class="fa-regular fa-calendar"></i> Em breve</span></div>
+                <span class="card__badge"><i class="fa-solid fa-lock"></i> Em produção</span>
+            </div>
+        </div>
+        <div class="card card--locked" data-bloco="ml">
+            <div class="card__thumb"><div style="height:100%;background:var(--secondary);"></div><span class="card__bloco">Machine Learning</span></div>
+            <div class="card__body">
+                <span class="card__num">Artigo 18 de 28</span>
+                <h3 class="card__title">Avaliação de Modelos — Métricas que Importam</h3>
+                <p class="card__desc">Accuracy, Precision, Recall, F1, AUC-ROC — quando usar cada métrica e como evitar armadilhas em dados desbalanceados.</p>
+                <div class="card__meta"><span><i class="fa-regular fa-calendar"></i> Em breve</span></div>
+                <span class="card__badge"><i class="fa-solid fa-lock"></i> Em produção</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- BLOCO 4 -->
+    <div class="bloco-header"><h2>Bloco 4 — Cloud e Produção (AWS + GCP)</h2></div>
+    <div class="grid">
+        <div class="card card--locked" data-bloco="cloud">
+            <div class="card__thumb"><div style="height:100%;background:var(--secondary);"></div><span class="card__bloco">Cloud</span></div>
+            <div class="card__body">
+                <span class="card__num">Artigo 19 de 28</span>
+                <h3 class="card__title">Data Lake para ML e Dados — S3 vs Cloud Storage</h3>
+                <p class="card__desc">Objetivo de S3 e Cloud Storage em dados/ML, com vantagens e desvantagens em custo, governança e integração de pipelines.</p>
+                <div class="card__meta"><span><i class="fa-regular fa-calendar"></i> Em breve</span></div>
+                <span class="card__badge"><i class="fa-solid fa-lock"></i> Em produção</span>
+            </div>
+        </div>
+        <div class="card card--locked" data-bloco="cloud">
+            <div class="card__thumb"><div style="height:100%;background:var(--secondary);"></div><span class="card__bloco">Cloud</span></div>
+            <div class="card__body">
+                <span class="card__num">Artigo 20 de 28</span>
+                <h3 class="card__title">Treinamento e Deploy — SageMaker vs Vertex AI</h3>
+                <p class="card__desc">Quando usar cada plataforma para treinar e servir modelos, comparando experiência, MLOps, custo operacional e lock-in.</p>
+                <div class="card__meta"><span><i class="fa-regular fa-calendar"></i> Em breve</span></div>
+                <span class="card__badge"><i class="fa-solid fa-lock"></i> Em produção</span>
+            </div>
+        </div>
+        <div class="card card--locked" data-bloco="cloud">
+            <div class="card__thumb"><div style="height:100%;background:var(--secondary);"></div><span class="card__bloco">Cloud</span></div>
+            <div class="card__body">
+                <span class="card__num">Artigo 22 de 28</span>
+                <h3 class="card__title">IA Generativa Gerenciada — Bedrock vs Vertex AI</h3>
+                <p class="card__desc">Comparativo prático para GenAI em produção: catálogo de modelos, segurança, latência, custo e riscos de dependência de provedor.</p>
+                <div class="card__meta"><span><i class="fa-regular fa-calendar"></i> Em breve</span></div>
+                <span class="card__badge"><i class="fa-solid fa-lock"></i> Em produção</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- BLOCO 5 -->
+    <div class="bloco-header"><h2>Bloco 5 — IA Generativa</h2></div>
+    <div class="grid">
+        <div class="card card--locked" data-bloco="genai">
+            <div class="card__thumb"><div style="height:100%;background:var(--secondary);"></div><span class="card__bloco">IA Generativa</span></div>
+            <div class="card__body">
+                <span class="card__num">Artigo 24 de 28</span>
+                <h3 class="card__title">O que são LLMs — Intuição sem Matemática</h3>
+                <p class="card__desc">Como grandes modelos de linguagem funcionam, o que eles podem e não podem fazer — explicado para executivos e times de negócio.</p>
+                <div class="card__meta"><span><i class="fa-regular fa-calendar"></i> Em breve</span></div>
+                <span class="card__badge"><i class="fa-solid fa-lock"></i> Em produção</span>
+            </div>
+        </div>
+        <div class="card card--locked" data-bloco="genai">
+            <div class="card__thumb"><div style="height:100%;background:var(--secondary);"></div><span class="card__bloco">IA Generativa</span></div>
+            <div class="card__body">
+                <span class="card__num">Artigo 25 de 28</span>
+                <h3 class="card__title">RAG — Fazendo LLMs Falarem sobre seu Negócio</h3>
+                <p class="card__desc">Retrieval-Augmented Generation na prática: como conectar LLMs a bases de conhecimento internas sem fine-tuning.</p>
+                <div class="card__meta"><span><i class="fa-regular fa-calendar"></i> Em breve</span></div>
+                <span class="card__badge"><i class="fa-solid fa-lock"></i> Em produção</span>
+            </div>
+        </div>
+        <div class="card card--locked" data-bloco="genai">
+            <div class="card__thumb"><div style="height:100%;background:var(--secondary);"></div><span class="card__bloco">IA Generativa</span></div>
+            <div class="card__body">
+                <span class="card__num">Artigo 28 de 28</span>
+                <h3 class="card__title">Fine-tuning vs RAG — Quando usar cada um</h3>
+                <p class="card__desc">Guia executivo para decidir entre fine-tuning e RAG: custo, latência, manutenção e casos de uso ideais para cada abordagem.</p>
+                <div class="card__meta"><span><i class="fa-regular fa-calendar"></i> Em breve</span></div>
+                <span class="card__badge"><i class="fa-solid fa-lock"></i> Em produção</span>
+            </div>
+        </div>
+    </div>
+</main>
+
+<footer>
+    <p>&copy; 2025 Victor Zoré. <a href="../index.html">Voltar ao portfólio</a></p>
+</footer>
+
+<script>
+    function filterCards(bloco, btn) {
+        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        const sections = [];
+        document.querySelectorAll('.bloco-header').forEach(header => {
+            const grid = header.nextElementSibling;
+            if (grid && grid.classList.contains('grid')) {
+                sections.push({ header, grid });
+            }
+        });
+
+        sections.forEach(({ header, grid }) => {
+            let visibleCards = 0;
+            grid.querySelectorAll('.card').forEach(card => {
+                const shouldShow = bloco === 'all' || card.dataset.bloco === bloco;
+                card.style.display = shouldShow ? 'flex' : 'none';
+                if (shouldShow) {
+                    visibleCards += 1;
+                }
+            });
+
+            const showSection = visibleCards > 0;
+            header.style.display = showSection ? 'block' : 'none';
+            grid.style.display = showSection ? 'grid' : 'none';
+        });
+    }
+</script>
+
+</body>
+</html>

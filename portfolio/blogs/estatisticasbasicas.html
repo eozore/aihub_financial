@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Estatísticas Básicas</title>
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --primary-color: #db4a2b;
+            --bg-color: #f8fafc;
+            --text-color: #1e293b;
+            --success-color: #10b981;
+            --error-color: #ef4444;
+        }
+        body { font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.8; color: var(--text-color); background-color: var(--bg-color); margin: 0; padding: 20px; }
+        .container { max-width: 900px; margin: 0 auto; background: #fff; padding: 40px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+        h1 { color: var(--primary-color); font-size: 2.5rem; margin-bottom: 10px; line-height: 1.2; }
+        h2 { color: var(--primary-color); border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; margin-top: 40px; }
+        h3 { color: #475569; margin-top: 30px; }
+        .subtitle { font-size: 1.2rem; color: #64748b; margin-bottom: 40px; font-weight: 300; }
+        .story-box { background-color: #eff6ff; border-left: 5px solid var(--primary-color); padding: 20px; border-radius: 0 8px 8px 0; margin: 30px 0; font-style: italic; }
+        .highlight-box { background-color: #fffbeb; border: 1px solid #fcd34d; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .highlight-title { font-weight: bold; color: #92400e; display: block; margin-bottom: 5px; }
+        .complexity-box { background-color: #f0fdf4; border: 1px solid #86efac; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .complexity-title { font-weight: bold; color: #166534; display: block; margin-bottom: 8px; }
+        table { width: 100%; border-collapse: collapse; margin: 25px 0; font-size: 0.9em; box-shadow: 0 0 20px rgba(0,0,0,0.05); }
+        table thead tr { background-color: var(--primary-color); color: #fff; text-align: left; }
+        table th, table td { padding: 12px 15px; border: 1px solid #ddd; }
+        table tbody tr { border-bottom: 1px solid #ddd; }
+        .chart-container { position: relative; height: 380px; width: 100%; margin: 30px 0; }
+        .quiz-container { margin-top: 50px; border-top: 2px dashed #cbd5e1; padding-top: 30px; }
+        .question-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+        .question-text { font-weight: 600; margin-bottom: 15px; display: block; }
+        .options { display: flex; flex-direction: column; gap: 10px; }
+        .option-btn { padding: 10px 15px; border: 1px solid #cbd5e1; border-radius: 6px; background: white; cursor: pointer; text-align: left; transition: all 0.2s; }
+        .option-btn:hover { background-color: #f1f5f9; }
+        .option-btn.correct { background-color: #dcfce7; border-color: var(--success-color); color: #064e3b; }
+        .option-btn.incorrect { background-color: #fee2e2; border-color: var(--error-color); color: #7f1d1d; }
+        .feedback { margin-top: 10px; font-size: 0.9em; display: none; padding: 10px; border-radius: 6px; }
+        .feedback.show { display: block; }
+        .references { background-color: #f8fafc; padding: 20px; border-radius: 8px; margin-top: 40px; }
+        @media (max-width: 600px) { .container { padding: 20px; } h1 { font-size: 1.8rem; } }
+    </style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>Estatísticas Básicas</h1>
+        <p class="subtitle">Média, mediana, variância e o que elas escondem sobre seus dados</p>
+        <p style="font-size:0.85rem; color:#94a3b8;">📚 Artigo 2 de 7 — Bloco: Fundação Estatística &nbsp;|  <a href="variaveisaleatorias.html" target="_blank" rel="noopener" style="color:#94a3b8;">← Artigo 1: Variáveis Aleatórias</a></p>
+        <p style="margin-top:10px;"><a href="https://www.youtube.com/@eozore" target="_blank" rel="noopener" style="color:#db4a2b; font-weight:600;">Ver no YouTube</a></p>
+    </header>
+
+    <section>
+        <div class="story-box">
+            <h3>📊 O Relatório que Enganou o CEO</h3>
+            <p>Carlos era analista de dados em uma fintech de crédito pessoal. Em uma reunião de resultados, o CEO perguntou: <em>"Qual é o salário médio dos nossos clientes aprovados?"</em>. Carlos respondeu: <strong>R$ 8.400</strong>. O CEO ficou satisfeito — parecia uma base sólida de clientes.</p>
+            <p>Três meses depois, a inadimplência disparou. Uma auditoria revelou que a maioria dos clientes ganhava entre R$ 2.000 e R$ 4.000, mas um pequeno grupo de clientes com salários acima de R$ 80.000 havia inflado a média. Carlos havia apresentado a métrica certa para a pergunta errada.</p>
+        </div>
+    </section>
+
+    <section>
+        <h2>Medidas de Tendência Central</h2>
+        <p>Tendência central é o conceito de encontrar um valor "representativo" de um conjunto de dados. Existem três formas principais de fazer isso, e cada uma conta uma história diferente.</p>
+        <p>Se no artigo anterior a pergunta era "qual variável aleatória modela o problema?", aqui a pergunta vira: <em>"como resumir os dados observados sem se enganar?"</em></p>
+
+        <h3>Média Aritmética</h3>
+        <p>A mais conhecida. Soma todos os valores e divide pela quantidade.</p>
+        $$\bar{x} = \frac{1}{n} \sum_{i=1}^{n} x_i$$
+        <div class="highlight-box">
+            <span class="highlight-title">⚠️ Armadilha da Média</span>
+            A média é extremamente sensível a <strong>outliers</strong> (valores extremos). No caso de Carlos, os clientes com salário de R$ 80.000+ puxaram a média para cima, distorcendo a realidade da maioria.
+        </div>
+
+        <h3>Mediana</h3>
+        <p>O valor central quando os dados estão ordenados. Metade dos dados está abaixo, metade acima. É <strong>robusta a outliers</strong>.</p>
+        $$\text{Mediana} = \begin{cases} x_{\frac{n+1}{2}} & \text{se } n \text{ é ímpar} \\ \frac{x_{\frac{n}{2}} + x_{\frac{n}{2}+1}}{2} & \text{se } n \text{ é par} \end{cases}$$
+
+        <h3>Moda</h3>
+        <p>O valor que aparece com maior frequência. Útil para variáveis categóricas e para identificar o comportamento mais comum.</p>
+
+        <table>
+            <thead>
+                <tr><th>Métrica</th><th>Salários (R$)</th><th>Resultado</th><th>Quando usar</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>Média</td><td>2k, 3k, 3.5k, 4k, 80k</td><td>R$ 18.500</td><td>Dados sem outliers extremos</td></tr>
+                <tr><td>Mediana</td><td>2k, 3k, <strong>3.5k</strong>, 4k, 80k</td><td>R$ 3.500</td><td>Dados com outliers (renda, preço de imóveis)</td></tr>
+                <tr><td>Moda</td><td>2k, <strong>3k, 3k</strong>, 4k, 80k</td><td>R$ 3.000</td><td>Variáveis categóricas ou discretas</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section>
+        <h2>Medidas de Dispersão</h2>
+        <p>Saber o centro não basta. Dois grupos podem ter a mesma média e comportamentos completamente diferentes. As medidas de dispersão revelam o <em>risco</em> e a <em>variabilidade</em>.</p>
+
+        <h3>Variância e Desvio Padrão</h3>
+        <p>A variância mede o espalhamento médio ao quadrado em relação à média. O desvio padrão é sua raiz quadrada — mais fácil de interpretar pois está na mesma unidade dos dados.</p>
+        $$s^2 = \frac{1}{n-1} \sum_{i=1}^{n} (x_i - \bar{x})^2 \qquad s = \sqrt{s^2}$$
+        <div class="highlight-box">
+            <span class="highlight-title">💡 Por que n-1?</span>
+            Usamos \(n-1\) (e não \(n\)) ao calcular a variância amostral. Isso é chamado de <strong>correção de Bessel</strong> — garante que a estimativa da variância da amostra seja não-viesada em relação à variância da população.
+        </div>
+
+        <h3>Amplitude e IQR (Intervalo Interquartil)</h3>
+        <p>A <strong>amplitude</strong> é simplesmente \(\max - \min\) — muito sensível a outliers. O <strong>IQR</strong> é mais robusto: mede a distância entre o 1º e o 3º quartil (os 50% centrais dos dados).</p>
+        $$IQR = Q_3 - Q_1$$
+
+        <div class="complexity-box">
+            <span class="complexity-title">🔬 IQR na Detecção de Outliers</span>
+            <p>O IQR é a base do critério de Tukey para detectar outliers automaticamente. Um ponto é considerado outlier se:</p>
+            $$x < Q_1 - 1.5 \times IQR \quad \text{ou} \quad x > Q_3 + 1.5 \times IQR$$
+            <p>Esse é exatamente o critério usado pelo boxplot — e por muitos pipelines de pré-processamento em ML para remover ou tratar anomalias antes do treinamento.</p>
+        </div>
+
+        <h3>Visualizando a Distribuição de Salários</h3>
+        <p>O gráfico abaixo mostra uma amostra da distribuição de salários dos clientes da fintech de Carlos. Nessa amostra, a mediana é R$ 3.500 e a média é aproximadamente R$ 5.522: a média (linha laranja) é puxada para a direita pelos outliers, enquanto a mediana (linha azul) representa melhor a maioria dos clientes.</p>
+        <div class="chart-container">
+            <canvas id="salaryChart"></canvas>
+        </div>
+    </section>
+
+    <section>
+        <h2>Quartis, Percentis e o Boxplot</h2>
+        <p>Quartis dividem os dados em 4 partes iguais. Percentis generalizam isso para 100 partes. São ferramentas poderosas para entender a distribuição sem assumir nenhuma forma específica.</p>
+
+        <table>
+            <thead>
+                <tr><th>Quartil</th><th>Equivalente</th><th>Significado</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>Q1</td><td>Percentil 25</td><td>25% dos dados estão abaixo deste valor</td></tr>
+                <tr><td>Q2</td><td>Percentil 50 (Mediana)</td><td>50% dos dados estão abaixo deste valor</td></tr>
+                <tr><td>Q3</td><td>Percentil 75</td><td>75% dos dados estão abaixo deste valor</td></tr>
+            </tbody>
+        </table>
+
+        <h3>Como Calcular Quartis na Prática</h3>
+        <p>Existem várias convenções para quartis. Aqui vamos usar um método simples e muito comum: <strong>mediana das metades</strong> (também chamado de <em>Tukey's hinges</em> em algumas referências). É o mesmo método implementado no script deste artigo.</p>
+        <ol>
+            <li>Ordene os dados: \(x_{(1)} \le x_{(2)} \le \dots \le x_{(n)}\).</li>
+            <li>Calcule \(Q_2\) (a mediana) do conjunto todo.</li>
+            <li>Divida o conjunto em duas metades: a metade inferior e a metade superior. Se \(n\) for ímpar, <strong>não</strong> inclua o elemento da mediana em nenhuma metade.</li>
+            <li>\(Q_1\) é a mediana da metade inferior; \(Q_3\) é a mediana da metade superior.</li>
+        </ol>
+        <p><strong>Exemplo:</strong> dados ordenados \(\{1,2,3,4,5,6,7,8,9,10\}\), com \(n=10\) (par).</p>
+        $$Q_2 = \frac{5+6}{2} = 5{,}5$$
+        <p>Metade inferior: \(\{1,2,3,4,5\}\) \(\Rightarrow Q_1 = 3\)</p>
+        <p>Metade superior: \(\{6,7,8,9,10\}\) \(\Rightarrow Q_3 = 8\)</p>
+        <p>Com isso, \(IQR = Q_3 - Q_1 = 8 - 3 = 5\).</p>
+
+        <p>O <strong>boxplot</strong> resume tudo isso visualmente: caixa do Q1 ao Q3, linha na mediana, bigodes até os limites de Tukey e pontos para outliers.</p>
+
+        <div class="chart-container" style="height:250px;">
+            <canvas id="boxplotChart"></canvas>
+        </div>
+        <p><em>Este boxplot é calculado a partir de uma amostra sintética com n=45. Com amostras muito pequenas, quartis e outliers ficam instáveis e a leitura do boxplot piora.</em></p>
+
+        <div class="complexity-box">
+            <span class="complexity-title">🔬 Percentis em Modelos de Crédito</span>
+            <p>No contexto de Carlos, a solução foi segmentar os clientes por faixas de renda usando percentis, e treinar um modelo de risco de crédito separado para cada segmento. Um cliente no percentil 90 de renda tem um perfil de risco completamente diferente de um no percentil 20 — tratá-los com a mesma média era o erro fundamental.</p>
+            <p>Isso é chamado de <strong>estratificação</strong> e é uma técnica essencial em modelagem preditiva para evitar que grupos minoritários (mas influentes) distorçam o modelo.</p>
+        </div>
+    </section>
+
+    <section>
+        <div class="highlight-box" style="border-color:#db4a2b; background-color:#eff6ff;">
+            <h3>📝 Resumo para Levar na Mochila</h3>
+            <ul>
+                <li><strong>Média</strong> é sensível a outliers; use <strong>mediana</strong> para dados assimétricos.</li>
+                <li><strong>Desvio padrão</strong> quantifica o risco/variabilidade na mesma unidade dos dados.</li>
+                <li><strong>IQR</strong> é a base para detecção de outliers (critério de Tukey).</li>
+                <li><strong>Percentis</strong> permitem segmentar e comparar grupos sem assumir distribuição.</li>
+                <li><strong>Quartis</strong> exigem dados ordenados, posição e (quando necessário) interpolação.</li>
+            </ul>
+        </div>
+    </section>
+
+    <section>
+        <div class="complexity-box" style="border-color:#bae6fd; background-color:#f0f9ff;">
+            <span class="complexity-title">➡️ O Que Vem a Seguir</span>
+            <p>Você já sabe descrever dados com média, mediana e desvio padrão. O próximo passo é entender <strong>como visualizar</strong> essas informações de forma que qualquer pessoa — técnica ou não — consiga interpretar. No <a href="tabelasegraficos.html" target="_blank" rel="noopener">Artigo 3 — Tabelas e Gráficos</a>, vamos cobrir os principais tipos de visualização e quando usar cada um.</p>
+        </div>
+    </section>
+
+    <section class="references">
+        <h3>📚 Para Se Aprofundar</h3>
+        <ul>
+            <li><strong>"Estatística Básica"</strong> — Morettin & Bussab. Capítulos 3 e 4.</li>
+            <li><strong>"Practical Statistics for Data Scientists"</strong> — Bruce, Bruce & Gedeck. (Foco direto em aplicações de DS.)</li>
+            <li><strong>"Statistics"</strong> — Freedman, Pisani & Purves. (Intuição sólida sem excesso de fórmulas.)</li>
+        </ul>
+    </section>
+
+    <section class="quiz-container">
+        <h2>🧠 Teste Seu Conhecimento</h2>
+        <p style="margin-bottom:20px;">Responda às perguntas abaixo para validar o que aprendeu.</p>
+        <div id="quiz-root"></div>
+    </section>
+</div>
+
+<script>
+    const salarySample = [
+        1200, 1500, 1700, 1800, 1900, 2000, 2100, 2200, 2300, 2400,
+        2500, 2600, 2700, 2800, 2900, 3000, 3100, 3200, 3300, 3400,
+        3450, 3480, 3500, 3520, 3550, 3600, 3700, 3800, 3900, 4000,
+        4200, 4400, 4600, 4800, 5100, 5400, 5800, 6300, 7000, 7800,
+        9000, 12000, 17000, 25000, 45000
+    ];
+
+    // --- Funções auxiliares (quartis, resumo e formatação) ---
+    function median(sortedValues) {
+        const n = sortedValues.length;
+        if (n === 0) return NaN;
+        const mid = Math.floor(n / 2);
+        if (n % 2 === 1) return sortedValues[mid];
+        return (sortedValues[mid - 1] + sortedValues[mid]) / 2;
+    }
+
+    // Quartis pelo método "mediana das metades".
+    function quartilesByHalves(sortedValues) {
+        const n = sortedValues.length;
+        if (n === 0) return { q1: NaN, median: NaN, q3: NaN };
+
+        const med = median(sortedValues);
+        const half = Math.floor(n / 2);
+        const lower = sortedValues.slice(0, half);
+        const upper = sortedValues.slice(n % 2 === 0 ? half : half + 1);
+
+        return {
+            q1: median(lower),
+            median: med,
+            q3: median(upper)
+        };
+    }
+
+    function summarizeBoxplot(values) {
+        const sortedValues = [...values].sort((a, b) => a - b);
+        const { q1, median, q3 } = quartilesByHalves(sortedValues);
+        const iqr = q3 - q1;
+        const lowerFence = q1 - 1.5 * iqr;
+        const upperFence = q3 + 1.5 * iqr;
+        const inliers = sortedValues.filter(v => v >= lowerFence && v <= upperFence);
+        const outliers = sortedValues.filter(v => v < lowerFence || v > upperFence);
+
+        return {
+            q1,
+            median,
+            q3,
+            whiskerMin: inliers[0],
+            whiskerMax: inliers[inliers.length - 1],
+            outliers,
+            sampleSize: sortedValues.length
+        };
+    }
+
+    function mean(values) {
+        return values.reduce((acc, value) => acc + value, 0) / values.length;
+    }
+
+    function formatCurrency(value) {
+        return `R$${Math.round(value).toLocaleString('pt-BR')}`;
+    }
+
+    function formatCurrencyCompact(value) {
+        const numeric = Number(value);
+        if (Math.abs(numeric) >= 1000) {
+            const compact = (numeric / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+            return `R$${compact}k`;
+        }
+        return `R$${Math.round(numeric).toLocaleString('pt-BR')}`;
+    }
+
+    const salarySummary = summarizeBoxplot(salarySample);
+    const salaryMean = mean(salarySample);
+
+    // --- Gráfico de Distribuição de Salários (com média/mediana corretas) ---
+    const histogramBinSize = 2500;
+    const histogramMin = Math.floor(Math.min(...salarySample) / histogramBinSize) * histogramBinSize;
+    const histogramMax = Math.ceil(Math.max(...salarySample) / histogramBinSize) * histogramBinSize;
+    const histogramBucketCount = Math.max(1, Math.ceil((histogramMax - histogramMin) / histogramBinSize));
+    const histogramBuckets = Array.from({ length: histogramBucketCount }, (_, index) => ({
+        start: histogramMin + index * histogramBinSize,
+        count: 0
+    }));
+
+    for (const value of salarySample) {
+        const rawIndex = Math.floor((value - histogramMin) / histogramBinSize);
+        const safeIndex = Math.min(Math.max(rawIndex, 0), histogramBuckets.length - 1);
+        histogramBuckets[safeIndex].count += 1;
+    }
+
+    const salaryHistogramData = histogramBuckets.map(bucket => ({
+        x: bucket.start + histogramBinSize / 2,
+        y: bucket.count
+    }));
+
+    const salaryLinesPlugin = {
+        id: 'salaryLines',
+        afterDatasetsDraw(chart, _args, opts) {
+            if (!opts) return;
+
+            const ctx = chart.ctx;
+            const xAxis = chart.scales.x;
+            const yAxis = chart.scales.y;
+            const markers = [
+                { value: opts.medianValue, color: '#2563eb', label: `Mediana: ${formatCurrencyCompact(opts.medianValue)}`, offsetY: 16 },
+                { value: opts.meanValue, color: '#f59e0b', label: `Média: ${formatCurrencyCompact(opts.meanValue)}`, offsetY: 32 }
+            ];
+
+            markers.forEach(marker => {
+                const x = xAxis.getPixelForValue(marker.value);
+                ctx.save();
+                ctx.beginPath();
+                ctx.moveTo(x, yAxis.top);
+                ctx.lineTo(x, yAxis.bottom);
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = marker.color;
+                ctx.setLineDash([5, 5]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.fillStyle = marker.color;
+                ctx.font = '12px Segoe UI';
+                ctx.fillText(marker.label, x + 6, yAxis.top + marker.offsetY);
+                ctx.restore();
+            });
+        }
+    };
+    Chart.register(salaryLinesPlugin);
+
+    new Chart(document.getElementById('salaryChart').getContext('2d'), {
+        type: 'bar',
+        data: {
+            datasets: [{
+                label: 'Frequência de Clientes',
+                data: salaryHistogramData,
+                backgroundColor: 'rgba(219, 74, 43, 0.5)',
+                borderColor: '#db4a2b',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            parsing: false,
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        title: items => {
+                            const center = items[0].parsed.x;
+                            const start = center - histogramBinSize / 2;
+                            const end = center + histogramBinSize / 2;
+                            return `Faixa: ${formatCurrencyCompact(start)} a ${formatCurrencyCompact(end)}`;
+                        },
+                        label: ctx => `Clientes: ${ctx.parsed.y}`
+                    }
+                },
+                salaryLines: {
+                    medianValue: salarySummary.median,
+                    meanValue: salaryMean
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    title: { display: true, text: 'Frequência' }
+                },
+                x: {
+                    type: 'linear',
+                    min: histogramMin,
+                    max: histogramMax,
+                    title: { display: true, text: 'Salário (R$)' },
+                    ticks: {
+                        maxTicksLimit: 8,
+                        callback: value => formatCurrencyCompact(Number(value))
+                    }
+                }
+            }
+        }
+    });
+
+    // --- Boxplot correto (quartis + Tukey) ---
+    const boxplotPlugin = {
+        id: 'boxplotPlugin',
+        afterDatasetsDraw(chart, _args, opts) {
+            if (!opts || !opts.summary) return;
+
+            const summary = opts.summary;
+            const xAxis = chart.scales.x;
+            const yAxis = chart.scales.y;
+            const y = yAxis.getPixelForValue(0);
+            const q1X = xAxis.getPixelForValue(summary.q1);
+            const medX = xAxis.getPixelForValue(summary.median);
+            const q3X = xAxis.getPixelForValue(summary.q3);
+            const minX = xAxis.getPixelForValue(summary.whiskerMin);
+            const maxX = xAxis.getPixelForValue(summary.whiskerMax);
+
+            const boxHeight = 34;
+            const halfBox = boxHeight / 2;
+            const capHalf = 10;
+            const ctx = chart.ctx;
+
+            ctx.save();
+            ctx.strokeStyle = opts.strokeColor || '#db4a2b';
+            ctx.fillStyle = opts.fillColor || 'rgba(219,74,43,0.3)';
+            ctx.lineWidth = 2;
+
+            ctx.beginPath();
+            ctx.moveTo(minX, y);
+            ctx.lineTo(maxX, y);
+            ctx.stroke();
+
+            ctx.fillRect(q1X, y - halfBox, q3X - q1X, boxHeight);
+            ctx.strokeRect(q1X, y - halfBox, q3X - q1X, boxHeight);
+
+            ctx.beginPath();
+            ctx.moveTo(medX, y - halfBox);
+            ctx.lineTo(medX, y + halfBox);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(minX, y - capHalf);
+            ctx.lineTo(minX, y + capHalf);
+            ctx.moveTo(maxX, y - capHalf);
+            ctx.lineTo(maxX, y + capHalf);
+            ctx.stroke();
+
+            ctx.restore();
+        }
+    };
+    Chart.register(boxplotPlugin);
+    const salaryOutliers = salarySummary.outliers.map(value => ({ x: value, y: 0 }));
+    const salaryScaleMax = Math.max(
+        salarySummary.whiskerMax,
+        ...(salarySummary.outliers.length ? salarySummary.outliers : [salarySummary.whiskerMax])
+    );
+    const salaryAxisMax = Math.ceil((salaryScaleMax + 500) / 1000) * 1000;
+
+    new Chart(document.getElementById('boxplotChart').getContext('2d'), {
+        type: 'scatter',
+        data: {
+            datasets: [
+                {
+                    label: 'Outliers',
+                    data: salaryOutliers,
+                    pointRadius: 4,
+                    pointHoverRadius: 5,
+                    pointBackgroundColor: '#dc2626',
+                    pointBorderColor: '#dc2626'
+                },
+                {
+                    label: 'Escala',
+                    data: [
+                        { x: salarySummary.whiskerMin, y: 0 },
+                        { x: salaryAxisMax, y: 0 }
+                    ],
+                    pointRadius: 0,
+                    pointHoverRadius: 0,
+                    showLine: false
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        label: ctx => (
+                            ctx.datasetIndex === 0
+                                ? `Outlier: ${formatCurrency(ctx.parsed.x)}`
+                                : ''
+                        )
+                    }
+                },
+                boxplotPlugin: {
+                    summary: salarySummary,
+                    strokeColor: '#db4a2b',
+                    fillColor: 'rgba(219,74,43,0.3)'
+                }
+            },
+            scales: {
+                x: {
+                    type: 'linear',
+                    min: 0,
+                    max: salaryAxisMax,
+                    title: { display: true, text: 'Salário (R$)' },
+                    ticks: { maxTicksLimit: 6, callback: value => formatCurrencyCompact(value) }
+                },
+                y: {
+                    display: false,
+                    min: -1,
+                    max: 1,
+                    grid: { display: false }
+                }
+            }
+        }
+    });
+
+    // --- Quiz ---
+    const questions = [
+        {
+            text: "No caso de Carlos, por que a média de R$8.400 era enganosa?",
+            options: ["Porque foi calculada errado.", "Porque poucos clientes com salários muito altos inflaram a média.", "Porque a mediana era maior.", "Porque o CEO não entende de estatística.", "Porque R$8.400 é um número par."],
+            correct: 1,
+            feedback: "Exato! Outliers de alto salário puxaram a média para cima, distorcendo a realidade da maioria dos clientes."
+        },
+        {
+            text: "Qual medida de tendência central é mais robusta a outliers?",
+            options: ["Média aritmética.", "Moda.", "Mediana.", "Variância.", "Desvio padrão."],
+            correct: 2,
+            feedback: "Correto! A mediana não é afetada por valores extremos — ela só depende da posição central dos dados ordenados."
+        },
+        {
+            text: "O que é o IQR (Intervalo Interquartil)?",
+            options: ["A diferença entre o maior e o menor valor.", "A média dos quartis.", "A distância entre Q1 e Q3, cobrindo os 50% centrais dos dados.", "O desvio padrão dividido pela média.", "O valor do segundo quartil."],
+            correct: 2,
+            feedback: "Isso! IQR = Q3 - Q1. Ele mede a dispersão dos 50% centrais, ignorando os extremos."
+        },
+        {
+            text: "Pelo critério de Tukey, um ponto é outlier se:",
+            options: ["For maior que a média.", "Estiver fora de 2 desvios padrão.", "For menor que Q1 - 1.5×IQR ou maior que Q3 + 1.5×IQR.", "For igual à moda.", "Estiver no percentil 99."],
+            correct: 2,
+            feedback: "Correto! Esse é o critério clássico de Tukey, base do boxplot e de muitos pipelines de pré-processamento."
+        },
+        {
+            text: "Por que usamos n-1 no denominador da variância amostral?",
+            options: ["Por convenção histórica sem motivo matemático.", "Para tornar o cálculo mais fácil.", "Para garantir que a estimativa seja não-viesada em relação à variância populacional (correção de Bessel).", "Porque n é sempre par.", "Para aumentar o valor da variância."],
+            correct: 2,
+            feedback: "Exato! Com n-1 graus de liberdade, a variância amostral é um estimador não-viesado da variância da população."
+        },
+        {
+            text: "Considere os dados ordenados: 2, 3, 5, 7, 8, 9, 12, 13, 20. Quais são Q1, Q2 e Q3?",
+            options: ["Q1=3, Q2=7, Q3=13", "Q1=5, Q2=8, Q3=12", "Q1=2, Q2=8, Q3=20", "Q1=4, Q2=8, Q3=14", "Q1=5, Q2=9, Q3=13"],
+            correct: 1,
+            feedback: "Correto! Com n=9, as posições de Q1/Q2/Q3 caem exatamente no 3º, 5º e 7º valores."
+        },
+        {
+            text: "No método deste artigo, como calculamos Q1 e Q3?",
+            options: ["Usando interpolação em pos = (n - 1) × p.", "Como as medianas das metades inferior e superior (sem incluir a mediana quando n é ímpar).", "Como a média dos 25% menores e 25% maiores valores.", "Como a média dos 3 menores e 3 maiores valores.", "Como o valor mais frequente nas metades."],
+            correct: 1,
+            feedback: "Isso! Q1 é a mediana da metade inferior e Q3 é a mediana da metade superior; se n for ímpar, a mediana geral não entra em nenhuma metade."
+        },
+        {
+            text: "Se Q1 = 2.600 e Q3 = 4.800, qual é o IQR e o limite superior de Tukey?",
+            options: ["IQR=2.200 e limite superior=8.100", "IQR=2.200 e limite superior=7.000", "IQR=7.400 e limite superior=11.100", "IQR=1.100 e limite superior=6.450", "IQR=2.200 e limite superior=9.300"],
+            correct: 0,
+            feedback: "Correto! IQR = 4.800 - 2.600 = 2.200 e o limite superior é Q3 + 1.5×IQR = 8.100."
+        },
+        {
+            text: "Em qual situação a moda é a métrica mais adequada?",
+            options: ["Para calcular o salário médio de uma empresa.", "Para medir a dispersão de preços.", "Para identificar o produto mais vendido em um e-commerce.", "Para calcular o risco de crédito.", "Para medir a altura média de uma população."],
+            correct: 2,
+            feedback: "Exato! A moda identifica o valor mais frequente — perfeito para variáveis categóricas como produtos, categorias ou status."
+        },
+        {
+            text: "Por que segmentar clientes por percentis de renda melhora modelos de crédito?",
+            options: ["Porque percentis são mais fáceis de calcular.", "Porque elimina todos os outliers.", "Porque clientes em faixas diferentes têm perfis de risco distintos — tratá-los com a mesma média distorce o modelo.", "Porque o banco exige por regulação.", "Porque aumenta o número de features."],
+            correct: 2,
+            feedback: "Perfeito! Estratificação por percentis garante que o modelo capture os padrões específicos de cada grupo, sem que outliers distorçam o aprendizado."
+        }
+    ];
+
+    function renderQuiz() {
+        const root = document.getElementById('quiz-root');
+        questions.forEach((q, index) => {
+            const card = document.createElement('div');
+            card.className = 'question-card';
+            const title = document.createElement('span');
+            title.className = 'question-text';
+            title.innerText = `${index + 1}. ${q.text}`;
+            card.appendChild(title);
+            const optionsDiv = document.createElement('div');
+            optionsDiv.className = 'options';
+            const feedbackDiv = document.createElement('div');
+            feedbackDiv.className = 'feedback';
+            q.options.forEach((opt, i) => {
+                const btn = document.createElement('button');
+                btn.className = 'option-btn';
+                btn.innerText = opt;
+                btn.onclick = () => {
+                    optionsDiv.querySelectorAll('.option-btn').forEach(b => b.disabled = true);
+                    if (i === q.correct) {
+                        btn.classList.add('correct');
+                        feedbackDiv.innerText = "✅ " + q.feedback;
+                        feedbackDiv.style.backgroundColor = "#dcfce7";
+                        feedbackDiv.style.color = "#064e3b";
+                    } else {
+                        btn.classList.add('incorrect');
+                        optionsDiv.querySelectorAll('.option-btn')[q.correct].classList.add('correct');
+                        feedbackDiv.innerText = "❌ Incorreto. " + q.feedback;
+                        feedbackDiv.style.backgroundColor = "#fee2e2";
+                        feedbackDiv.style.color = "#7f1d1d";
+                    }
+                    feedbackDiv.classList.add('show');
+                };
+                optionsDiv.appendChild(btn);
+            });
+            card.appendChild(optionsDiv);
+            card.appendChild(feedbackDiv);
+            root.appendChild(card);
+        });
+    }
+    renderQuiz();
+</script>
+</body>
+</html>

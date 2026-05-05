@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Probabilidade e Distribuições</title>
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --primary-color: #db4a2b;
+            --bg-color: #f8fafc;
+            --text-color: #1e293b;
+            --success-color: #10b981;
+            --error-color: #ef4444;
+        }
+        body { font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.8; color: var(--text-color); background-color: var(--bg-color); margin: 0; padding: 20px; }
+        .container { max-width: 900px; margin: 0 auto; background: #fff; padding: 40px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+        h1 { color: var(--primary-color); font-size: 2.5rem; margin-bottom: 10px; line-height: 1.2; }
+        h2 { color: var(--primary-color); border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; margin-top: 40px; }
+        h3 { color: #475569; margin-top: 30px; }
+        .subtitle { font-size: 1.2rem; color: #64748b; margin-bottom: 40px; font-weight: 300; }
+        .story-box { background-color: #eff6ff; border-left: 5px solid var(--primary-color); padding: 20px; border-radius: 0 8px 8px 0; margin: 30px 0; font-style: italic; }
+        .highlight-box { background-color: #fffbeb; border: 1px solid #fcd34d; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .highlight-title { font-weight: bold; color: #92400e; display: block; margin-bottom: 5px; }
+        .complexity-box { background-color: #f0fdf4; border: 1px solid #86efac; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .complexity-title { font-weight: bold; color: #166534; display: block; margin-bottom: 8px; }
+        table { width: 100%; border-collapse: collapse; margin: 25px 0; font-size: 0.9em; box-shadow: 0 0 20px rgba(0,0,0,0.05); }
+        table thead tr { background-color: var(--primary-color); color: #fff; text-align: left; }
+        table th, table td { padding: 12px 15px; border: 1px solid #ddd; }
+        table tbody tr { border-bottom: 1px solid #ddd; }
+        .chart-container { position: relative; height: 380px; width: 100%; margin: 30px 0; }
+        .quiz-container { margin-top: 50px; border-top: 2px dashed #cbd5e1; padding-top: 30px; }
+        .question-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+        .question-text { font-weight: 600; margin-bottom: 15px; display: block; }
+        .options { display: flex; flex-direction: column; gap: 10px; }
+        .option-btn { padding: 10px 15px; border: 1px solid #cbd5e1; border-radius: 6px; background: white; cursor: pointer; text-align: left; transition: all 0.2s; }
+        .option-btn:hover { background-color: #f1f5f9; }
+        .option-btn.correct { background-color: #dcfce7; border-color: var(--success-color); color: #064e3b; }
+        .option-btn.incorrect { background-color: #fee2e2; border-color: var(--error-color); color: #7f1d1d; }
+        .feedback { margin-top: 10px; font-size: 0.9em; display: none; padding: 10px; border-radius: 6px; }
+        .feedback.show { display: block; }
+        .references { background-color: #f8fafc; padding: 20px; border-radius: 8px; margin-top: 40px; }
+        @media (max-width: 600px) { .container { padding: 20px; } h1 { font-size: 1.8rem; } }
+    </style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>Probabilidade e Distribuições</h1>
+        <p class="subtitle">Da intuição de chance às distribuições que alimentam modelos de ML</p>
+        <p style="font-size:0.85rem; color:#94a3b8;">📚 Artigo 4 de 7 — Bloco: Fundação Estatística &nbsp;|  <a href="tabelasegraficos.html" target="_blank" rel="noopener" style="color:#94a3b8;">← Artigo 3: Tabelas e Gráficos</a></p>
+        <p style="margin-top:10px;"><a href="https://www.youtube.com/@eozore" target="_blank" rel="noopener" style="color:#db4a2b; font-weight:600;">Ver no YouTube</a></p>
+    </header>
+
+    <section>
+        <div class="story-box">
+            <h3>🎯 O Sistema de Detecção de Fraudes</h3>
+            <p>Beatriz era cientista de dados em um banco digital. Seu modelo de detecção de fraudes estava com 98% de acurácia — e o diretor estava comemorando. Mas Beatriz sabia que havia algo errado: das 10.000 transações diárias, apenas 50 eram fraudes (0,5%). Um modelo que simplesmente classificasse <em>tudo</em> como legítimo já teria 99,5% de acurácia.</p>
+            <p>O problema real era probabilístico: dado que uma transação tem certas características suspeitas, <em>qual a probabilidade de ser fraude?</em> Para responder isso corretamente, Beatriz precisava dominar probabilidade condicional, o Teorema de Bayes e as distribuições que descrevem eventos raros.</p>
+        </div>
+    </section>
+
+    <section>
+        <h2>Fundamentos de Probabilidade</h2>
+
+        <h3>Probabilidade Clássica</h3>
+        <p>A probabilidade de um evento \(A\) é a razão entre os casos favoráveis e o total de casos igualmente prováveis:</p>
+        $$P(A) = \frac{\text{casos favoráveis}}{\text{total de casos}}$$
+
+        <h3>Probabilidade Condicional</h3>
+        <p>A probabilidade de \(A\) ocorrer <em>dado que</em> \(B\) já ocorreu. Essa é a base do raciocínio bayesiano:</p>
+        $$P(A \mid B) = \frac{P(A \cap B)}{P(B)}$$
+
+        <div class="highlight-box">
+            <span class="highlight-title">💡 No contexto de Beatriz</span>
+            \(P(\text{Fraude} \mid \text{Transação Suspeita})\) é muito diferente de \(P(\text{Fraude})\). A probabilidade condicional atualiza nossa crença com base em evidências — exatamente o que um modelo de ML faz.
+        </div>
+
+        <h3>Teorema de Bayes</h3>
+        <p>Permite inverter a probabilidade condicional — calcular \(P(\text{causa} \mid \text{efeito})\) a partir de \(P(\text{efeito} \mid \text{causa})\):</p>
+        $$P(A \mid B) = \frac{P(B \mid A) \cdot P(A)}{P(B)}$$
+
+        <table>
+            <thead>
+                <tr><th>Termo</th><th>Nome</th><th>Significado no problema de Beatriz</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>\(P(A)\)</td><td>Prior</td><td>P(Fraude) = 0,5% — frequência base de fraudes</td></tr>
+                <tr><td>\(P(B \mid A)\)</td><td>Verossimilhança</td><td>P(Suspeita | Fraude) — quão suspeitas são as fraudes</td></tr>
+                <tr><td>\(P(A \mid B)\)</td><td>Posterior</td><td>P(Fraude | Suspeita) — o que queremos calcular</td></tr>
+                <tr><td>\(P(B)\)</td><td>Evidência</td><td>P(Suspeita) — frequência total de transações suspeitas</td></tr>
+            </tbody>
+        </table>
+
+        <div class="complexity-box">
+            <span class="complexity-title">🔬 Bayes na Prática: O Paradoxo da Acurácia</span>
+            <p>Suponha: P(Fraude) = 0,5%, P(Suspeita | Fraude) = 90%, P(Suspeita | Legítima) = 5%.</p>
+            <p>Calculando P(Fraude | Suspeita) pelo Teorema de Bayes:</p>
+            $$P(\text{Fraude} \mid \text{Suspeita}) = \frac{0{,}90 \times 0{,}005}{0{,}90 \times 0{,}005 + 0{,}05 \times 0{,}995} \approx 8{,}3\%$$
+            <p>Mesmo com um alerta suspeito, a probabilidade de fraude é apenas 8,3%! Isso explica por que sistemas de fraude geram muitos falsos positivos — e por que métricas como <strong>Precision e Recall</strong> são mais relevantes que acurácia nesse contexto.</p>
+        </div>
+    </section>
+
+    <section>
+        <h2>Distribuições Discretas</h2>
+
+        <h3>Distribuição de Bernoulli</h3>
+        <p>O caso mais simples: um único experimento com dois resultados possíveis (sucesso/fracasso). É o átomo de todas as distribuições discretas.</p>
+        $$P(X = k) = p^k (1-p)^{1-k}, \quad k \in \{0, 1\}$$
+        <p><strong>Exemplo:</strong> Uma transação é fraude (1) ou não (0), com \(p = 0{,}005\).</p>
+        <p>\(E[X] = p\) &nbsp;&nbsp; \(Var(X) = p(1-p)\)</p>
+
+        <h3>Distribuição Binomial</h3>
+        <p>Generaliza Bernoulli para \(n\) experimentos independentes. Conta o número de sucessos em \(n\) tentativas.</p>
+        $$P(X = k) = \binom{n}{k} p^k (1-p)^{n-k}$$
+        <p><strong>Exemplo:</strong> Em 1.000 transações, quantas serão fraude? \(X \sim B(1000, 0{,}005)\).</p>
+        <p>\(E[X] = np\) &nbsp;&nbsp; \(Var(X) = np(1-p)\)</p>
+
+        <h3>Distribuição de Poisson</h3>
+        <p>Modela o número de eventos raros em um intervalo fixo de tempo ou espaço. Ideal quando \(n\) é grande e \(p\) é pequeno.</p>
+        $$P(X = k) = \frac{e^{-\lambda} \lambda^k}{k!}, \quad \lambda = np$$
+        <p><strong>Exemplo:</strong> Número de fraudes por hora em um sistema com taxa média \(\lambda = 2\) fraudes/hora.</p>
+
+        <div class="chart-container">
+            <canvas id="discreteChart"></canvas>
+        </div>
+        <p><em>Comparação entre Binomial(n=20, p=0.1) e Poisson(λ=2). Para n grande e p pequeno, as distribuições convergem.</em></p>
+    </section>
+
+    <section>
+        <h2>Distribuições Contínuas</h2>
+
+        <h3>Distribuição Normal (Gaussiana)</h3>
+        <p>A mais importante da estatística. Simétrica, definida por média \(\mu\) e desvio padrão \(\sigma\).</p>
+        $$f(x) = \frac{1}{\sigma\sqrt{2\pi}} e^{-\frac{1}{2}\left(\frac{x-\mu}{\sigma}\right)^2}$$
+        <p>A <strong>Regra Empírica</strong> (68-95-99.7): 68% dos dados estão em \(\mu \pm \sigma\), 95% em \(\mu \pm 2\sigma\), 99.7% em \(\mu \pm 3\sigma\).</p>
+
+        <h3>Distribuição Exponencial</h3>
+        <p>Modela o tempo entre eventos em um processo de Poisson. Tem a propriedade de <em>ausência de memória</em>.</p>
+        $$f(x) = \lambda e^{-\lambda x}, \quad x \geq 0$$
+        <p><strong>Exemplo:</strong> Tempo entre duas fraudes consecutivas, dado que ocorrem a uma taxa \(\lambda\).</p>
+
+        <h3>Distribuição Uniforme</h3>
+        <p>Todos os valores no intervalo \([a, b]\) têm a mesma probabilidade. Base para geração de números aleatórios e inicialização de pesos em redes neurais.</p>
+        $$f(x) = \frac{1}{b-a}, \quad a \leq x \leq b$$
+
+        <div class="chart-container">
+            <canvas id="continuousChart"></canvas>
+        </div>
+        <p><em>Normal(μ=0, σ=1), Exponencial(λ=1) e Uniforme(0,1) — três formas completamente diferentes de distribuir probabilidade.</em></p>
+
+        <div class="complexity-box">
+            <span class="complexity-title">🔬 Distribuições em Algoritmos de ML</span>
+            <p>A escolha da distribuição não é apenas teórica — ela define a função de perda do seu modelo:</p>
+            <ul>
+                <li><strong>Normal → Regressão Linear:</strong> Assume que os erros seguem \(\mathcal{N}(0, \sigma^2)\), o que leva ao método dos mínimos quadrados.</li>
+                <li><strong>Bernoulli/Binomial → Regressão Logística:</strong> Modela a probabilidade de classes binárias via função sigmoide.</li>
+                <li><strong>Poisson → Regressão de Poisson:</strong> Para modelar contagens (número de cliques, vendas por dia, fraudes por hora).</li>
+                <li><strong>Exponencial → Modelos de Sobrevivência:</strong> Para modelar tempo até um evento (churn, falha de equipamento).</li>
+            </ul>
+            <p>Quando você escolhe uma função de perda, está implicitamente assumindo uma distribuição para os seus dados. Entender isso é o que separa quem usa ML de quem entende ML.</p>
+        </div>
+    </section>
+
+    <section>
+        <h2>Assimetria e Curtose: A Forma das Distribuições</h2>
+        <p>Além de média e variância, a <em>forma</em> da distribuição ajuda a decidir se o modelo probabilístico escolhido faz sentido para os dados.</p>
+
+        <h3>Assimetria (Skewness)</h3>
+        <p>Mede se a distribuição é simétrica ou se tem uma cauda mais longa em um dos lados.</p>
+        <ul>
+            <li><strong>Assimetria positiva (cauda à direita):</strong> média &gt; mediana. Comum em renda, preço de imóveis e tempos de resposta.</li>
+            <li><strong>Assimetria negativa (cauda à esquerda):</strong> média &lt; mediana. Pode ocorrer em provas muito fáceis, com notas concentradas no topo.</li>
+        </ul>
+
+        <h3>Curtose (Kurtosis)</h3>
+        <p>Mede o peso das caudas em relação à Normal. Curtose alta indica maior chance de eventos extremos, mesmo que a média pareça estável.</p>
+
+        <div class="highlight-box">
+            <span class="highlight-title">💡 Regra Prática</span>
+            Antes de assumir Normalidade em um modelo, verifique assimetria e curtose. Se \(|\text{skewness}| > 1\) ou \(\text{kurtosis} > 3\), considere transformações como \(\log(x)\) ou \(\sqrt{x}\).
+        </div>
+    </section>
+
+    <section>
+        <h2>Teorema Central do Limite</h2>
+        <p>Um dos resultados mais poderosos da estatística: independentemente da distribuição original dos dados, a <strong>média amostral</strong> de amostras suficientemente grandes converge para uma distribuição Normal.</p>
+        $$\bar{X} \xrightarrow{d} \mathcal{N}\left(\mu, \frac{\sigma^2}{n}\right) \quad \text{quando } n \to \infty$$
+
+        <div class="highlight-box">
+            <span class="highlight-title">💡 Por que isso importa para ML?</span>
+            O TCL justifica o uso de testes de hipótese e intervalos de confiança mesmo quando os dados originais não são normais. É também a base teórica para técnicas como bootstrap e validação cruzada — você está estimando a distribuição da performance do modelo via reamostragem.
+        </div>
+    </section>
+
+    <section>
+        <div class="highlight-box" style="border-color:#db4a2b; background-color:#eff6ff;">
+            <h3>📝 Resumo para Levar na Mochila</h3>
+            <ul>
+                <li><strong>Probabilidade condicional</strong> é a base do raciocínio com evidências — e de todo modelo supervisionado.</li>
+                <li><strong>Teorema de Bayes</strong> inverte a condicional: de P(efeito|causa) para P(causa|efeito).</li>
+                <li><strong>Bernoulli/Binomial</strong> para eventos binários; <strong>Poisson</strong> para eventos raros em intervalos.</li>
+                <li><strong>Normal</strong> para erros e médias; <strong>Exponencial</strong> para tempos entre eventos.</li>
+                <li><strong>Assimetria e curtose</strong> ajudam a validar se a distribuição escolhida representa bem os extremos.</li>
+                <li>A distribuição que você assume define a função de perda do seu modelo.</li>
+                <li><strong>TCL</strong> garante que médias amostrais são normais — base dos testes estatísticos.</li>
+            </ul>
+        </div>
+    </section>
+
+    <section>
+        <div class="complexity-box" style="border-color:#bae6fd; background-color:#f0f9ff;">
+            <span class="complexity-title">➡️ O Que Vem a Seguir</span>
+            <p>Você agora entende como a probabilidade se distribui e como isso conecta com os modelos de ML. O próximo passo é entender <strong>como coletar dados de forma válida</strong> para que essas distribuições representem a realidade. No Artigo 5 — Amostragem e Inferência, vamos ver por que uma pesquisa eleitoral pode errar mesmo com 10.000 respostas.</p>
+        </div>
+    </section>
+
+    <section class="references">
+        <h3>📚 Para Se Aprofundar</h3>
+        <ul>
+            <li><strong>"Probabilidade: Um Curso Moderno com Aplicações"</strong> — Sheldon Ross.</li>
+            <li><strong>"Pattern Recognition and Machine Learning"</strong> — Bishop. (Capítulo 1 e 2: fundamentos probabilísticos de ML.)</li>
+            <li><strong>"Bayesian Data Analysis"</strong> — Gelman et al. (A referência em inferência bayesiana.)</li>
+        </ul>
+    </section>
+
+    <section class="quiz-container">
+        <h2>🧠 Teste Seu Conhecimento</h2>
+        <p style="margin-bottom:20px;">Responda às perguntas abaixo para validar o que aprendeu.</p>
+        <div id="quiz-root"></div>
+    </section>
+</div>
+
+<script>
+    // --- Gráfico Distribuições Discretas ---
+    function binomialPMF(n, p, k) {
+        function logFact(n) { let r = 0; for (let i = 2; i <= n; i++) r += Math.log(i); return r; }
+        return Math.exp(logFact(n) - logFact(k) - logFact(n - k) + k * Math.log(p) + (n - k) * Math.log(1 - p));
+    }
+    function poissonPMF(lambda, k) {
+        function logFact(n) { let r = 0; for (let i = 2; i <= n; i++) r += Math.log(i); return r; }
+        return Math.exp(-lambda + k * Math.log(lambda) - logFact(k));
+    }
+
+    const discreteLabels = Array.from({length: 11}, (_, i) => i);
+    const binomData = discreteLabels.map(k => binomialPMF(20, 0.1, k));
+    const poissonData = discreteLabels.map(k => poissonPMF(2, k));
+
+    new Chart(document.getElementById('discreteChart').getContext('2d'), {
+        type: 'bar',
+        data: {
+            labels: discreteLabels,
+            datasets: [
+                { label: 'Binomial(n=20, p=0.1)', data: binomData, backgroundColor: 'rgba(219,74,43,0.6)', borderColor: '#db4a2b', borderWidth: 1 },
+                { label: 'Poisson(λ=2)', data: poissonData, backgroundColor: 'rgba(37,99,235,0.4)', borderColor: '#2563eb', borderWidth: 1 }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { position: 'top' } },
+            scales: {
+                x: { title: { display: true, text: 'k (número de eventos)' } },
+                y: { title: { display: true, text: 'P(X = k)' } }
+            }
+        }
+    });
+
+    // --- Gráfico Distribuições Contínuas ---
+    const contLabels = [];
+    const normalData = [], expData = [], uniformData = [];
+    for (let i = -4; i <= 4; i += 0.1) {
+        contLabels.push(i.toFixed(1));
+        normalData.push((1 / Math.sqrt(2 * Math.PI)) * Math.exp(-0.5 * i * i));
+        expData.push(i >= 0 ? Math.exp(-i) : null);
+        uniformData.push(i >= 0 && i <= 1 ? 1 : null);
+    }
+
+    new Chart(document.getElementById('continuousChart').getContext('2d'), {
+        type: 'line',
+        data: {
+            labels: contLabels,
+            datasets: [
+                { label: 'Normal(μ=0, σ=1)', data: normalData, borderColor: '#db4a2b', backgroundColor: 'rgba(219,74,43,0.1)', fill: true, tension: 0.4, pointRadius: 0 },
+                { label: 'Exponencial(λ=1)', data: expData, borderColor: '#2563eb', backgroundColor: 'rgba(37,99,235,0.1)', fill: true, tension: 0.4, pointRadius: 0 },
+                { label: 'Uniforme(0,1)', data: uniformData, borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0, pointRadius: 0 }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { position: 'top' } },
+            scales: {
+                x: { title: { display: true, text: 'x' }, ticks: { maxTicksLimit: 10 } },
+                y: { title: { display: true, text: 'f(x)' } }
+            }
+        }
+    });
+
+    // --- Quiz ---
+    const questions = [
+        {
+            text: "Por que a acurácia de 98% do modelo de Beatriz era enganosa?",
+            options: ["Porque o modelo estava com bug.", "Porque 98% é um número baixo.", "Porque com apenas 0,5% de fraudes, um modelo que classifica tudo como legítimo já teria 99,5% de acurácia.", "Porque o banco não tinha dados suficientes.", "Porque a acurácia só funciona para regressão."],
+            correct: 2,
+            feedback: "Exato! Em dados desbalanceados, acurácia é uma métrica enganosa. Precision e Recall são mais adequados."
+        },
+        {
+            text: "O que o Teorema de Bayes permite calcular?",
+            options: ["A média de uma distribuição.", "P(causa | efeito) a partir de P(efeito | causa) e probabilidades prévias.", "O desvio padrão de uma amostra.", "A variância de uma distribuição binomial.", "O número de eventos em um intervalo."],
+            correct: 1,
+            feedback: "Correto! Bayes inverte a condicional — de P(sintoma|doença) para P(doença|sintoma), por exemplo."
+        },
+        {
+            text: "Qual distribuição modela o número de sucessos em n experimentos independentes com probabilidade p?",
+            options: ["Poisson.", "Normal.", "Exponencial.", "Binomial.", "Uniforme."],
+            correct: 3,
+            feedback: "Isso! Binomial(n, p) conta sucessos em n tentativas. Bernoulli é o caso especial com n=1."
+        },
+        {
+            text: "Quando a distribuição de Poisson é uma boa aproximação para a Binomial?",
+            options: ["Quando n é pequeno e p é grande.", "Quando n é grande e p é pequeno (eventos raros).", "Quando os dados são contínuos.", "Quando a média é igual à variância.", "Quando os eventos são dependentes."],
+            correct: 1,
+            feedback: "Correto! Poisson é o limite da Binomial quando n→∞ e p→0, mantendo λ=np constante."
+        },
+        {
+            text: "Qual propriedade única a distribuição Exponencial possui?",
+            options: ["Simetria em torno da média.", "Ausência de memória: P(X > s+t | X > s) = P(X > t).", "Variância sempre igual à média.", "Suporte apenas em inteiros.", "Curtose sempre igual a 3."],
+            correct: 1,
+            feedback: "Exato! Ausência de memória significa que o tempo já esperado não influencia o tempo restante — útil para modelar falhas de equipamentos."
+        },
+        {
+            text: "Na Regressão Logística, qual distribuição está sendo modelada implicitamente?",
+            options: ["Normal.", "Poisson.", "Exponencial.", "Bernoulli/Binomial.", "Uniforme."],
+            correct: 3,
+            feedback: "Correto! A regressão logística modela P(Y=1|X) assumindo que Y segue uma distribuição de Bernoulli."
+        },
+        {
+            text: "O que o Teorema Central do Limite afirma?",
+            options: ["Que todos os dados seguem distribuição normal.", "Que a média amostral converge para uma distribuição normal, independente da distribuição original.", "Que a variância amostral é sempre igual à variância populacional.", "Que amostras grandes têm média zero.", "Que a mediana converge para a média."],
+            correct: 1,
+            feedback: "Isso! O TCL é a base teórica para testes de hipótese e intervalos de confiança mesmo com dados não-normais."
+        },
+        {
+            text: "Qual distribuição é mais adequada para modelar o número de cliques por hora em um anúncio?",
+            options: ["Normal.", "Bernoulli.", "Uniforme.", "Poisson.", "Exponencial."],
+            correct: 3,
+            feedback: "Correto! Poisson modela contagens de eventos raros em intervalos fixos — perfeito para cliques, acessos, fraudes por hora."
+        },
+        {
+            text: "Se P(Fraude)=0.5% e P(Alerta|Fraude)=90%, P(Alerta|Legítima)=5%, qual é aproximadamente P(Fraude|Alerta)?",
+            options: ["90%", "50%", "0.5%", "8.3%", "95%"],
+            correct: 3,
+            feedback: "Correto! Pelo Teorema de Bayes: (0.9×0.005) / (0.9×0.005 + 0.05×0.995) ≈ 8.3%. A base rate baixa domina o resultado."
+        },
+        {
+            text: "Por que a escolha da distribuição importa ao definir a função de perda de um modelo?",
+            options: ["Não importa, qualquer função de perda funciona igual.", "Porque define a linguagem de programação a usar.", "Porque cada função de perda assume implicitamente uma distribuição para os erros — usar a errada leva a estimativas viesadas.", "Porque distribuições diferentes têm velocidades de treinamento diferentes.", "Porque o hardware exige distribuições específicas."],
+            correct: 2,
+            feedback: "Perfeito! MSE assume erros normais, Cross-Entropy assume Bernoulli/Multinomial. Entender isso é o que separa quem usa ML de quem entende ML."
+        }
+    ];
+
+    function renderQuiz() {
+        const root = document.getElementById('quiz-root');
+        questions.forEach((q, index) => {
+            const card = document.createElement('div');
+            card.className = 'question-card';
+            const title = document.createElement('span');
+            title.className = 'question-text';
+            title.innerText = `${index + 1}. ${q.text}`;
+            card.appendChild(title);
+            const optionsDiv = document.createElement('div');
+            optionsDiv.className = 'options';
+            const feedbackDiv = document.createElement('div');
+            feedbackDiv.className = 'feedback';
+            q.options.forEach((opt, i) => {
+                const btn = document.createElement('button');
+                btn.className = 'option-btn';
+                btn.innerText = opt;
+                btn.onclick = () => {
+                    optionsDiv.querySelectorAll('.option-btn').forEach(b => b.disabled = true);
+                    if (i === q.correct) {
+                        btn.classList.add('correct');
+                        feedbackDiv.innerText = "✅ " + q.feedback;
+                        feedbackDiv.style.backgroundColor = "#dcfce7";
+                        feedbackDiv.style.color = "#064e3b";
+                    } else {
+                        btn.classList.add('incorrect');
+                        optionsDiv.querySelectorAll('.option-btn')[q.correct].classList.add('correct');
+                        feedbackDiv.innerText = "❌ Incorreto. " + q.feedback;
+                        feedbackDiv.style.backgroundColor = "#fee2e2";
+                        feedbackDiv.style.color = "#7f1d1d";
+                    }
+                    feedbackDiv.classList.add('show');
+                };
+                optionsDiv.appendChild(btn);
+            });
+            card.appendChild(optionsDiv);
+            card.appendChild(feedbackDiv);
+            root.appendChild(card);
+        });
+    }
+    renderQuiz();
+</script>
+</body>
+</html>

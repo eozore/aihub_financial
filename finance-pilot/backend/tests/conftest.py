@@ -7,7 +7,6 @@ os.environ["USE_SQLITE"] = "true"
 os.environ["USE_MOCK_DATA"] = "false"
 os.environ["REQUIRE_AUTH_FOR_DATA"] = "false"
 os.environ["TENANT_REQUIRED"] = "false"
-os.environ["AUTO_JOIN_LEGACY_WORKSPACE"] = "false"
 os.environ["PROJECT_ID"] = "test-project"
 
 from fastapi.testclient import TestClient

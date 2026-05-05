@@ -6,18 +6,23 @@ from typing import Optional
 
 from fastapi import HTTPException
 
-from config import PLAN_LIMITS, OWNERS
+from config import PLAN_LIMITS
 
 
 def normalize_owner(owner: Optional[str]) -> str:
+    """Return the owner string stripped and title-cased.
+
+    Previously this validated against a static OWNERS list from config.
+    Validation against workspace members is now the caller's responsibility
+    (see the dynamic ``GET /owners`` endpoint).
+    """
     raw = (owner or "").strip()
-    for configured_owner in OWNERS:
-        if raw.lower() == configured_owner.lower():
-            return configured_owner
-    raise HTTPException(
-        status_code=400,
-        detail=f"Owner must be one of: {', '.join(OWNERS)}"
-    )
+    if not raw:
+        raise HTTPException(
+            status_code=400,
+            detail="Owner name must not be empty",
+        )
+    return raw
 
 
 def parse_br_money(value: Optional[object]) -> Optional[float]:

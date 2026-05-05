@@ -146,6 +146,9 @@ export interface MeSummary {
   };
   active_workspace_id?: string;
   workspace_count: number;
+  display_name?: string;
+  short_name?: string;
+  photo_url?: string;
 }
 
 export const uploadInvoice = async (file: File, owner: string, monthRef: string) => {
@@ -407,5 +410,115 @@ export const acceptInvite = async (inviteId: string) => {
   if (response.data?.workspace_id) {
     setActiveWorkspace(response.data.workspace_id);
   }
+  return response.data;
+};
+
+// ============================================================
+// Upload Flow Types & API (PDF → Preview → Confirm)
+// ============================================================
+
+export interface PreviewTransaction {
+  date: string;
+  card_last4: string | null;
+  description: string;
+  amount: number;
+  is_refund: boolean;
+  suggested_category: string;
+  suggested_type: string | null;
+  needs_review: boolean;
+}
+
+export interface UploadPreviewResponse {
+  file_hash: string;
+  statement_type: 'credit_card' | 'current_account';
+  bank: string;
+  holder_name: string;
+  period_start: string;
+  period_end: string;
+  total_amount: number;
+  transactions: PreviewTransaction[];
+  unregistered_cards: string[];
+}
+
+export interface ConfirmedTransaction {
+  date: string;
+  card_last4: string | null;
+  description: string;
+  amount: number;
+  is_refund: boolean;
+  category: string;
+  owner: string;
+}
+
+export interface UploadConfirmRequest {
+  file_hash: string;
+  transactions: ConfirmedTransaction[];
+}
+
+export const uploadFile = async (file: File): Promise<UploadPreviewResponse> => {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const response = await api.post('/upload', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return response.data;
+};
+
+export const confirmUpload = async (data: UploadConfirmRequest) => {
+  const response = await api.post('/upload/confirm', data);
+  return response.data;
+};
+
+// ============================================================
+// Cards API
+// ============================================================
+
+export interface CardCreate {
+  owner: string;
+  last4: string;
+  label?: string;
+  card_type: 'individual' | 'shared';
+  bank?: string;
+}
+
+export interface CardResponse {
+  id: string;
+  workspace_id: string;
+  owner: string;
+  last4: string;
+  label: string | null;
+  card_type: 'individual' | 'shared';
+  bank: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export const createCard = async (data: CardCreate): Promise<CardResponse> => {
+  const response = await api.post('/cards', data);
+  return response.data;
+};
+
+export const getCards = async (): Promise<CardResponse[]> => {
+  const response = await api.get('/cards');
+  return response.data?.cards || response.data || [];
+};
+
+// ============================================================
+// User Profile
+// ============================================================
+
+export interface UserProfile {
+  display_name?: string;
+  short_name?: string;
+  photo_url?: string;
+  birth_date?: string;
+  cpf?: string;
+  address?: string;
+}
+
+export const updateMyProfile = async (data: UserProfile) => {
+  const response = await api.put('/me/profile', data);
   return response.data;
 };

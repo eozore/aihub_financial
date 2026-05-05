@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Victor Zoré - Portfólio</title>
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" integrity="sha512-SnH5WK+bZxgPHs44uWIX+LLJAJ9/2PkPKZ5QiAj6Ta86w+fsb2TkcmfRyVX3pBnMFcV7oQPJkl9QevSCWr3W6A==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <header class="header">
+        <div class="container header__container">
+            <a href="#" class="header__logo">éozoré.</a>
+            <nav class="header__nav">
+                <ul>
+                    <li><a href="#home">Home</a></li>
+                    <li><a href="#projetos">Projetos</a></li>
+                    <li><a href="#timeline">Linha do Tempo</a></li>
+                    <li><a href="#blog">Blog</a></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <main>
+        <section id="home" class="hero">
+            <div class="container hero__container">
+                <div class="hero__text">
+                    <h1>Prazer, Victor Zoré!</h1>
+                    <h2>Líder na área de ML & AI</h2>
+                    <p>Junto tecnologia e inteligência artificial para criar soluções que resolvem problemas reais de negócio. Criador do AINewz, uma plataforma de noticias escrita por IA, conheça e assine a newsletter!</p>
+                    <div class="hero__buttons">
+                        <a href="https://www.ainewz.com.br/" target="_blank" class="btn btn--dark">Conhecer AINewz <i class="fa-solid fa-arrow-right"></i></a>
+                        <a href="#projetos" class="btn btn--dark">Ver projetos</i></a>
+                        <!-- <a href="#" class="btn btn--link">Baixar CV</a> -->
+                    </div>
+                    <div class="hero__socials">
+                        <a href="https://github.com/Victorzoredev" target="_blank" aria-label="GitHub"><i class="fa-brands fa-github"></i></a>
+                        <a href="https://www.linkedin.com/in/victor-zor%C3%A9/" target="_blank" aria-label="LinkedIn"><i class="fa-brands fa-linkedin"></i></a>
+                        <a href="https://www.youtube.com/@eozore" target="_blank" aria-label="YouTube"><i class="fa-brands fa-youtube"></i></a>
+                    </div>
+                </div>
+                <div class="hero__image-wrapper">
+                    <img src="image/hero.png" alt="Victor em uma foto gerada por IA">
+                </div>
+            </div>
+        </section>
+
+        <section id="projetos" class="projects">
+            <div class="container">
+                <div class="section-header">
+                    <h2>Projetos em Destaque</h2>
+                    <p>Conheça as principais soluções desenvolvidas durante a minha carreira</p>
+                </div>
+                <div class="projects__grid">
+                    <div class="project-card" data-category="ai">
+                        <div class="project-card__image-placeholder"><img src="image/projeto_ainewz.png" alt="AINewz Projeto" style="width: 100%; height: auto;"></div>  
+                        <span class="project-card__tag">AI</span>
+                        <h3>AI Newz</h3>
+                        <p>Newsletter escrita por agentes de inteligência artificial e enviada diariamente para o seu email.</p>
+                        <div class="project-card__tech">
+                            <span>Cloud Run (GCP)</span><span>Flask</span><span>SendGrid</span>
+                        </div>
+                        <a href="https://www.ainewz.com.br/" class="project-card__link">Ver Projeto <i class="fa-solid fa-arrow-up-right-from-square"></i></a>
+                    </div>
+                    <div class="project-card" data-category="ml">
+                        <div class="project-card__image-placeholder"><img src="image/projeto_churn.png" alt="Churn Projeto" style="width: 100%; height: auto;"></div>
+                        <span class="project-card__tag">ML</span>
+                        <h3>Redução de Churn</h3>
+                        <p>Identificação de usuários com alto risco de churn e recomendação de ações personalizadas de retenção</p>
+                        <div class="project-card__tech">
+                            <span>Scikit-learn</span><span>LTV</span><span>SageMaker(AWS)</span>
+                        </div>
+                        <!-- <a href="#" class="project-card__link">Ver Projeto <i class="fa-solid fa-arrow-up-right-from-square"></i></a> -->
+                    </div>
+                    <div class="project-card" data-category="ai">
+                        <div class="project-card__image-placeholder"><img src="image/projeto_aiarticlez.png" alt="AIArticlez Projeto" style="width: 100%; height: auto;"></div>
+                        <span class="project-card__tag">AI</span>
+                        <h3>AI Articlez</h3>
+                        <p>Agentes autônomos de inteligência artificial capazes de planejar, redigir e ilustrar conteúdos completos para blogs e redes sociais.</p>
+                        <div class="project-card__tech">
+                            <span>Cloud Run (GCP)</span><span>LLM</span><span>API</span>
+                        </div>
+                        <a href="blogs/index.html" class="project-card__link">Ver Projeto <i class="fa-solid fa-arrow-up-right-from-square"></i></a>
+                    </div>
+                    <div class="project-card" data-category="ml">
+                        <div class="project-card__image-placeholder"><img src="image/projeto_mmm.png" alt="MMM Projeto" style="width: 100%; height: auto;"></div>
+                        <span class="project-card__tag">ML</span>
+                        <h3>Marketing Mix Modelling</h3>
+                        <p>Mix de modelos de regressão e série temporal para estimar os efeitos de investimento no resultado e calcular o share ótimo de investimentos em mídias pagas.</p>
+                        <div class="project-card__tech">
+                            <span>Scikit-learn</span><span>Software R</span><span>Google Analytics</span>
+                        </div>
+                        <!-- <a href="#" class="project-card__link">Ver Projeto <i class="fa-solid fa-arrow-up-right-from-square"></i></a> -->
+                    </div>
+                    <div class="project-card" data-category="ai">
+                        <div class="project-card__image-placeholder"><img src="image/projeto_aichat.png" alt="AIChatz Projeto" style="width: 100%; height: auto;"></div>
+                        <span class="project-card__tag">AI</span>
+                        <h3>AI Chatz</h3>
+                        <p>Assistente de atendimento humanizado com fluxo personalizado aplicável a qualquer área de negócios, capaz de responder perguntas baseado em processos internos.</p>
+                        <div class="project-card__tech">
+                            <span>Bedrock (AWS)</span><span>Lambda (AWS)</span><span>RAG</span>
+                        </div>
+                        <!-- <a href="#" class="project-card__link">Ver Projeto <i class="fa-solid fa-arrow-up-right-from-square"></i></a> -->
+                    </div>
+                    <div class="project-card" data-category="ml">
+                        <div class="project-card__image-placeholder"><img src="image/projeto_recom.png" alt="Personalize Projeto" style="width: 100%; height: auto;"></div>
+                        <span class="project-card__tag">ML</span>
+                        <h3>Sistema de Recomendação</h3>
+                        <p>Algoritmo de recomendação personalizada baseado em comportamento do usuário e características do item para streaming de música.</p>
+                        <div class="project-card__tech">
+                            <span>Personalize (AWS)</span><span>APIGateway (AWS)</span><span>Lambda (AWS)</span>
+                        </div>
+                        <!-- <a href="#" class="project-card__link">Ver Projeto <i class="fa-solid fa-arrow-up-right-from-square"></i></a> -->
+                    </div>
+                </div>
+                <!-- <div class="section-footer">
+                    <a href="#" class="btn btn--dark">Ver Todos os Projetos <i class="fa-solid fa-arrow-right"></i></a>
+                </div> -->
+            </div>
+        </section>
+
+        <section id="timeline" class="timeline-section">
+            <div class="container">
+                <div class="section-header">
+                    <h2>Linha do Tempo</h2>
+                    <p>Minha jornada profissional e acadêmica na área de aprendizado de máquina e inteligência artificial.</p>
+                </div>
+                <div class="timeline">
+                    <div class="timeline__item timeline__item--right">
+                        <div class="timeline__content">
+                            <div class="timeline__header">
+                                <span class="timeline__year">2025</span>
+                                <span class="timeline__tag timeline__tag--carreira">Carreira</span>
+                            </div>
+                            <h4>BRLink – Coordenador</h4>
+                            <p>Coordenação do time de desenvolvimento de soluções através de Aprendizado de Máquina e Inteligência Artificial.</p>
+                        </div>
+                    </div>
+                    <div class="timeline__item timeline__item--left">
+                        <div class="timeline__content">
+                            <div class="timeline__header">
+                                <span class="timeline__year">2023</span>
+                                <span class="timeline__tag timeline__tag--carreira">Carreira</span>
+                            </div>
+                            <h4>Youse – Cientista de dados</h4>
+                            <p>Desenvolvimento de soluções para redução do churn, personalização de ação de retenção e testes A/B.</p>
+                        </div>
+                    </div>
+                    <div class="timeline__item timeline__item--right">
+                         <div class="timeline__content">
+                            <div class="timeline__header">
+                                <span class="timeline__year">2021</span>
+                                <span class="timeline__tag timeline__tag--carreira">Carreira</span>
+                            </div>
+                            <h4>Meu Tudo – Cientista de dados</h4>
+                            <p>Desenvolvimento de modelo de score de conversão e clusterização de clientes.</p>
+                        </div>
+                    </div>
+                    <div class="timeline__item timeline__item--left">
+                         <div class="timeline__content">
+                            <div class="timeline__header">
+                                <span class="timeline__year">2020</span>
+                                <span class="timeline__tag timeline__tag--carreira">Carreira</span>
+                            </div>
+                            <h4>HartB - Cientista de dados</h4>
+                            <p>Desenvolvimento de modelos estatísticos e séries temporais para tomada de decisões na compra de mídias de performance.</p>
+                        </div>
+                    </div>
+                    <div class="timeline__item timeline__item--right">
+                        <div class="timeline__content">
+                           <div class="timeline__header">
+                               <span class="timeline__year">2019</span>
+                               <span class="timeline__tag timeline__tag--carreira">Carreira</span>
+                           </div>
+                           <h4>BeijaFlore - Cientista de dados</h4>
+                           <p>Desenvolvimento de solução de estimativa de provisão de crédito para grandes bancos (IFRS9) e dashboards interativos para grandes marcas do varejo.</p>
+                       </div>
+                   </div>
+                   <div class="timeline__item timeline__item--left">
+                        <div class="timeline__content">
+                           <div class="timeline__header">
+                               <span class="timeline__year">2018</span>
+                               <span class="timeline__tag timeline__tag--carreira">Carreira</span>
+                           </div>
+                           <h4>Raccoon – Cientista de dados</h4>
+                           <p>Desenvolvimento de modelos preditivos de vendas em mídias pagas e modelos de atribuição personalizados.</p>
+                       </div>
+                   </div>
+                    <div class="timeline__item timeline__item--right">
+                        <div class="timeline__content">
+                            <div class="timeline__header">
+                                <span class="timeline__year">2013</span>
+                                <span class="timeline__tag timeline__tag--educacao">Educação</span>
+                            </div>
+                            <h4>Graduação</h4>
+                            <p>Bacharel em Estatística na Universidade Federal de São Carlos.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+        
+        <section id="blog" class="blog">
+            <div class="container">
+                <div class="section-header">
+                    <h2>Blog</h2>
+                    <p>Artigos, tutoriais e reflexões sobre estatística, machine learning e inteligência artificial.</p>
+                </div>
+                <div class="blog__grid">
+                    <div class="blog-card">
+                        <div class="blog-card__image-placeholder"><img src="image/blog_variaveisaleatorias.jpg" alt="Variáveis Aleatórias" style="width: 100%; height: auto;"></div>
+                        <span class="blog-card__tag">Estatística</span>
+                        <h3>Variáveis Aleatórias</h3>
+                        <div class="blog-card__meta">
+                            <span><i class="fa-regular fa-calendar"></i> 01 Jun 2025</span>
+                            <span><i class="fa-regular fa-clock"></i> 8 min</span>
+                        </div>
+                        <p>O que é uma variável aleatória, notação científica e como modelar risco em produção usando quantis — com o caso da FlashLog.</p>
+                        <a href="blogs/variaveisaleatorias.html" class="blog-card__link" target="_blank" rel="noopener">Ler artigo <i class="fa-solid fa-arrow-right"></i></a>
+                    </div>
+                    <div class="blog-card">
+                        <div class="blog-card__image-placeholder"><img src="image/blog_variaveisaleatorias.jpg" alt="Estatísticas Básicas" style="width: 100%; height: auto;"></div>
+                        <span class="blog-card__tag">Estatística</span>
+                        <h3>Estatísticas Básicas</h3>
+                        <div class="blog-card__meta">
+                            <span><i class="fa-regular fa-calendar"></i> 08 Jun 2025</span>
+                            <span><i class="fa-regular fa-clock"></i> 9 min</span>
+                        </div>
+                        <p>Média, mediana, IQR, assimetria e curtose — e por que o CEO de uma fintech tomou a decisão errada confiando só na média.</p>
+                        <a href="blogs/estatisticasbasicas.html" class="blog-card__link" target="_blank" rel="noopener">Ler artigo <i class="fa-solid fa-arrow-right"></i></a>
+                    </div>
+                    <div class="blog-card">
+                        <div class="blog-card__image-placeholder"><img src="image/blog_variaveisaleatorias.jpg" alt="Probabilidade e Distribuições" style="width: 100%; height: auto;"></div>
+                        <span class="blog-card__tag">Estatística</span>
+                        <h3>Probabilidade e Distribuições</h3>
+                        <div class="blog-card__meta">
+                            <span><i class="fa-regular fa-calendar"></i> 22 Jun 2025</span>
+                            <span><i class="fa-regular fa-clock"></i> 11 min</span>
+                        </div>
+                        <p>Teorema de Bayes, distribuições discretas e contínuas e como a escolha da distribuição define a função de perda do seu modelo.</p>
+                        <a href="blogs/probabilidadedistribuicoes.html" class="blog-card__link" target="_blank" rel="noopener">Ler artigo <i class="fa-solid fa-arrow-right"></i></a>
+                    </div>
+                </div>
+                <div class="section-footer">
+                    <a href="blogs/index.html" class="btn btn--dark">Ver blog <i class="fa-solid fa-arrow-right"></i></a>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <footer class="footer">
+        <div class="container footer__container">
+            <p>&copy; 2025 Victor Zoré. Todos os direitos reservados.</p>
+            <a href="#">Zore.</a>
+        </div>
+    </footer>
+
+    <a class="floating-btn"
+      href="https://api.whatsapp.com/send?phone=551999766003"
+      target="_blank"
+      rel="noopener"
+      aria-label="Chamar no WhatsApp"
+    >
+      <i class="fa-brands fa-whatsapp"></i>
+    </a>
+</body>
+</html>
