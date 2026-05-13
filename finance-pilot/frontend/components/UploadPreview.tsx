@@ -35,9 +35,32 @@ export default function UploadPreview({ data, onBack, onConfirmed }: UploadPrevi
     data.unregistered_cards
   );
 
+  // User inputs for owner and month_ref
+  const [selectedOwner, setSelectedOwner] = useState<string>('Victor Z');
+  const [selectedMonthRef, setSelectedMonthRef] = useState<string>(
+    data.period_end ? data.period_end.substring(0, 7) : new Date().toISOString().substring(0, 7)
+  );
+
   const needsReviewCount = data.transactions.filter((t) => t.needs_review).length;
   const unregisteredCardCount = unregisteredCards.length;
-  const totalAmount = data.transactions.reduce((sum, t) => sum + t.amount, 0);
+
+  // Sum of extracted purchases (excluding refunds) — used for validation
+  const extractedPurchasesTotal = data.transactions
+    .filter((t) => !t.is_refund)
+    .reduce((sum, t) => sum + t.amount, 0);
+
+  // Total shown to user = purchases minus refunds
+  const totalAmount = data.transactions.reduce(
+    (sum, t) => sum + (t.is_refund ? -t.amount : t.amount),
+    0
+  );
+
+  // Validation: compare extracted sum against the cover page total_amount
+  // Allow up to 1% or R$5 tolerance (rounding differences)
+  const coverTotal = data.total_amount;
+  const amountDiff = Math.abs(extractedPurchasesTotal - coverTotal);
+  const amountDiffPct = coverTotal > 0 ? (amountDiff / coverTotal) * 100 : 0;
+  const hasAmountMismatch = coverTotal > 0 && amountDiff > 5 && amountDiffPct > 1;
 
   const handleConfirm = async () => {
     setStatus('confirming');
@@ -58,6 +81,10 @@ export default function UploadPreview({ data, onBack, onConfirmed }: UploadPrevi
 
       await confirmUpload({
         file_hash: data.file_hash,
+        statement_type: data.statement_type,
+        bank: data.bank,
+        month_ref: selectedMonthRef,
+        owner: selectedOwner,
         transactions,
       });
 
@@ -165,9 +192,17 @@ export default function UploadPreview({ data, onBack, onConfirmed }: UploadPrevi
               Total
             </span>
           </div>
-          <p className="text-sm font-bold text-[var(--color-text-primary)]">
+          <p className={clsx(
+            "text-sm font-bold",
+            hasAmountMismatch ? "text-red-600" : "text-[var(--color-text-primary)]"
+          )}>
             R$ {totalAmount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
           </p>
+          {hasAmountMismatch && (
+            <p className="text-xs text-red-500 mt-0.5">
+              Capa: R$ {coverTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+            </p>
+          )}
         </div>
         <div className="card p-4">
           <div className="flex items-center gap-2 mb-1">
@@ -183,7 +218,7 @@ export default function UploadPreview({ data, onBack, onConfirmed }: UploadPrevi
       </div>
 
       {/* Warnings */}
-      {(unregisteredCardCount > 0 || needsReviewCount > 0) && (
+      {(unregisteredCardCount > 0 || needsReviewCount > 0 || hasAmountMismatch) && (
         <div className="space-y-2">
           {unregisteredCardCount > 0 && (
             <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
@@ -207,28 +242,48 @@ export default function UploadPreview({ data, onBack, onConfirmed }: UploadPrevi
               </span>
             </div>
           )}
+          {hasAmountMismatch && (
+            <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-800">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-semibold">Divergência no valor total detectada</p>
+                <p className="text-xs mt-0.5">
+                  Soma das transações extraídas:{' '}
+                  <strong>
+                    R$ {extractedPurchasesTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                  </strong>
+                  {' '}— Valor na capa do PDF:{' '}
+                  <strong>
+                    R$ {coverTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                  </strong>
+                  {' '}(diferença de R$ {amountDiff.toLocaleString('pt-BR', { minimumFractionDigits: 2 })},{' '}
+                  {amountDiffPct.toFixed(1)}%). Verifique se alguma transação foi perdida na extração.
+                </p>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
       {/* Transactions Table */}
       <div className="card overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm" style={{ minWidth: '700px' }}>
             <thead>
               <tr className="border-b border-[var(--color-border)] bg-[var(--color-bg-accent)]">
-                <th className="text-left px-4 py-3 font-semibold text-[var(--color-text-secondary)] text-xs uppercase tracking-wide">
+                <th className="text-left px-4 py-3 font-semibold text-[var(--color-text-secondary)] text-xs uppercase tracking-wide whitespace-nowrap">
                   Data
                 </th>
                 <th className="text-left px-4 py-3 font-semibold text-[var(--color-text-secondary)] text-xs uppercase tracking-wide">
                   Descrição
                 </th>
-                <th className="text-left px-4 py-3 font-semibold text-[var(--color-text-secondary)] text-xs uppercase tracking-wide hidden sm:table-cell">
+                <th className="text-left px-4 py-3 font-semibold text-[var(--color-text-secondary)] text-xs uppercase tracking-wide whitespace-nowrap">
                   Cartão
                 </th>
-                <th className="text-right px-4 py-3 font-semibold text-[var(--color-text-secondary)] text-xs uppercase tracking-wide">
+                <th className="text-right px-4 py-3 font-semibold text-[var(--color-text-secondary)] text-xs uppercase tracking-wide whitespace-nowrap">
                   Valor
                 </th>
-                <th className="text-left px-4 py-3 font-semibold text-[var(--color-text-secondary)] text-xs uppercase tracking-wide hidden md:table-cell">
+                <th className="text-left px-4 py-3 font-semibold text-[var(--color-text-secondary)] text-xs uppercase tracking-wide whitespace-nowrap">
                   Categoria
                 </th>
               </tr>
@@ -252,11 +307,9 @@ export default function UploadPreview({ data, onBack, onConfirmed }: UploadPrevi
                     <td className="px-4 py-3 text-[var(--color-text-primary)] whitespace-nowrap">
                       {tx.date}
                     </td>
-                    <td className="px-4 py-3 text-[var(--color-text-primary)]">
+                    <td className="px-4 py-3 text-[var(--color-text-primary)] min-w-[200px]">
                       <div className="flex items-center gap-2">
-                        <span className="truncate max-w-[200px] sm:max-w-none">
-                          {tx.description}
-                        </span>
+                        <span>{tx.description}</span>
                         {tx.is_refund && (
                           <span className="shrink-0 text-[10px] font-semibold bg-green-100 text-green-700 px-1.5 py-0.5 rounded">
                             ESTORNO
@@ -264,7 +317,7 @@ export default function UploadPreview({ data, onBack, onConfirmed }: UploadPrevi
                         )}
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-[var(--color-text-secondary)] hidden sm:table-cell">
+                    <td className="px-4 py-3 text-[var(--color-text-secondary)] whitespace-nowrap">
                       {tx.card_last4 ? (
                         <span
                           className={clsx(
@@ -293,7 +346,7 @@ export default function UploadPreview({ data, onBack, onConfirmed }: UploadPrevi
                         minimumFractionDigits: 2,
                       })}
                     </td>
-                    <td className="px-4 py-3 hidden md:table-cell">
+                    <td className="px-4 py-3 whitespace-nowrap">
                       <span
                         className={clsx(
                           'inline-block text-xs font-medium px-2 py-0.5 rounded',
@@ -321,6 +374,34 @@ export default function UploadPreview({ data, onBack, onConfirmed }: UploadPrevi
           {message}
         </div>
       )}
+
+      {/* Owner and Month Ref Inputs */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)]">
+        <div>
+          <label className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1">
+            Owner (responsável)
+          </label>
+          <select
+            value={selectedOwner}
+            onChange={(e) => setSelectedOwner(e.target.value)}
+            className="w-full px-3 py-2 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-primary)] text-sm"
+          >
+            <option value="Victor Z">Victor Z</option>
+            <option value="Larissa C">Larissa C</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-[var(--color-text-secondary)] mb-1">
+            Mês referência
+          </label>
+          <input
+            type="month"
+            value={selectedMonthRef}
+            onChange={(e) => setSelectedMonthRef(e.target.value)}
+            className="w-full px-3 py-2 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-primary)] text-sm"
+          />
+        </div>
+      </div>
 
       {/* Action Buttons */}
       <div className="flex flex-col sm:flex-row gap-3">

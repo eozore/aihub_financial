@@ -452,6 +452,10 @@ export interface ConfirmedTransaction {
 
 export interface UploadConfirmRequest {
   file_hash: string;
+  statement_type?: 'credit_card' | 'current_account';
+  bank?: string | null;
+  month_ref?: string | null;
+  owner?: string | null;
   transactions: ConfirmedTransaction[];
 }
 

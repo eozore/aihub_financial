@@ -23,7 +23,7 @@ import database
 
 _tmp_dir = tempfile.mkdtemp()
 _test_db_path = Path(_tmp_dir) / "test_categories.db"
-database.DB_PATH = _test_db_path
+_original_db_path = database.DB_PATH
 
 
 from categories import (
@@ -66,6 +66,8 @@ def _setup_db():
     # Cleanup
     if _test_db_path.exists():
         os.remove(str(_test_db_path))
+    # Restore original DB_PATH so other tests are not affected
+    database.DB_PATH = _original_db_path
 
 
 # ---------------------------------------------------------------------------

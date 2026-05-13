@@ -58,6 +58,8 @@ from models import (
     NetWorthRowUpdate,
 )
 from upload_validation import validate_and_read_upload as _validate_and_read_upload, detect_file_type as _detect_file_type
+from enrichment_service import EnrichmentService, CardInfo
+import calendar
 from extraction_service import ExtractionService as _ExtractionService
 from card_service import (
     CardCreate as _CardCreate,
@@ -133,6 +135,10 @@ class ConfirmedTransaction(BaseModel):
 
 class UploadConfirmRequest(BaseModel):
     file_hash: str
+    statement_type: Literal["credit_card", "current_account"] = "credit_card"
+    bank: Optional[str] = None
+    month_ref: Optional[str] = None  # YYYY-MM — user input from upload UI
+    owner: Optional[str] = None  # Default owner for all transactions (user input)
     transactions: List[ConfirmedTransaction]
 
 def _parse_email_list(value: str) -> List[str]:
@@ -1985,8 +1991,12 @@ async def upload_preview(
                     if classification.needs_review:
                         needs_review = True
 
+                    # Pass through the original extracted date unchanged.
+                    # month_ref for grouping can be derived in the confirm step.
+                    tx_date = tx.date
+
                     preview_txns.append(PreviewTransaction(
-                        date=tx.date,
+                        date=tx_date,
                         card_last4=card_last4,
                         description=tx.description,
                         amount=tx.amount,
@@ -1998,6 +2008,37 @@ async def upload_preview(
 
             # Extract holder_name from first section owner or statement holder
             holder_name = extracted.holder_name
+
+            # Save raw statement to database for future use (best-effort)
+            raw_dict = _extraction_service.get_raw(file_hash)
+            if raw_dict and USE_SQLITE:
+                try:
+                    import uuid as _uuid
+                    raw_id = f"raw-{_uuid.uuid4().hex[:16]}"
+                    conn_raw = get_db_connection()
+                    c_raw = conn_raw.cursor()
+                    c_raw.execute(
+                        """INSERT OR IGNORE INTO raw_statements
+                           (id, file_hash, workspace_id, filename, model_used, raw_json,
+                            statement_type, bank, holder_name, invoice_total, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            raw_id, file_hash, workspace_id,
+                            file.filename or "unknown",
+                            "gemini-3.1-flash-lite-preview",
+                            json.dumps(raw_dict, ensure_ascii=False),
+                            extracted.statement_type,
+                            extracted.bank,
+                            extracted.holder_name,
+                            extracted.total_amount,
+                            datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        )
+                    )
+                    conn_raw.commit()
+                    conn_raw.close()
+                    logger.info("Saved raw statement for file_hash %s", file_hash[:12])
+                except Exception as raw_err:
+                    logger.warning("Failed to save raw statement: %s", raw_err)
 
             return UploadPreviewResponse(
                 file_hash=file_hash,
@@ -2022,10 +2063,14 @@ async def upload_preview(
             # Detect columns
             date_col = "date" if "date" in df.columns else ("Data" if "Data" in df.columns else None)
             amt_col = "amount" if "amount" in df.columns else ("Valor" if "Valor" in df.columns else None)
-            merch_col = "title" if "title" in df.columns else ("Observações" if "Observações" in df.columns else None)
+            merch_col = (
+                "title" if "title" in df.columns
+                else ("Observações" if "Observações" in df.columns
+                else ("merchant_clean" if "merchant_clean" in df.columns else None))
+            )
 
             if not all([date_col, amt_col, merch_col]):
-                raise HTTPException(status_code=422, detail="CSV must contain date/Data, amount/Valor, and title/Observações columns")
+                raise HTTPException(status_code=422, detail="CSV must contain date/Data, amount/Valor, and title/Observações/merchant_clean columns")
 
             # Derive month_ref from first row if not provided
             effective_month_ref = month_ref
@@ -2127,9 +2172,10 @@ async def upload_confirm(
 ):
     """Save confirmed (and possibly user-edited) transactions to the database.
 
-    Cross-references ``card_last4`` with registered cards to determine
-    ``card_type``, classifies categories via ``ClassificationService``,
-    and records the upload in ``upload_history``.
+    Classifies categories via ``ClassificationService`` and records the
+    upload in ``upload_history``.  Card-derived fields (owner, type,
+    card_type) and month_ref are stored as NULL — enrichment happens at
+    query time via EnrichmentService.
     """
     _require_data_access(tenant)
     _require_tenant_id(tenant)
@@ -2137,13 +2183,7 @@ async def upload_confirm(
         workspace_id = tenant.tenant_id
         user_id = tenant.user_id or "anonymous"
 
-        # 1. Build card lookup
-        registered_cards = _list_cards(workspace_id)
-        card_map: dict[str, str] = {}  # last4 -> card_type
-        for card in registered_cards:
-            card_map[card.last4] = card.card_type
-
-        # 2. Classification service
+        # Classification service
         from categories import ClassificationService as _ClassSvc
         from normalization import normalize_merchant as _norm_merchant
         cls_svc = _ClassSvc()
@@ -2161,14 +2201,7 @@ async def upload_confirm(
             for tx in body.transactions:
                 tx_id = f"tx-{uuid.uuid4().hex[:16]}"
 
-                # Determine card_type from registered cards
-                card_type: Optional[str] = None
                 needs_review = False
-                if tx.card_last4 and tx.card_last4 in card_map:
-                    card_type = card_map[tx.card_last4]
-                elif tx.card_last4:
-                    needs_review = True
-                    warnings.append(f"Card {tx.card_last4} not registered")
 
                 # Classify category using ClassificationService
                 merchant_clean = _norm_merchant(tx.description)
@@ -2179,44 +2212,67 @@ async def upload_confirm(
                 if classification.needs_review and not tx.category:
                     needs_review = True
 
-                # Derive month_ref from date
-                try:
-                    date_parts = tx.date.split("-")
-                    month_ref = f"{date_parts[0]}-{date_parts[1]}"
-                except Exception:
-                    month_ref = datetime.datetime.now().strftime("%Y-%m")
+                # Use body.month_ref (user input) or derive from date
+                month_ref = body.month_ref or (tx.date[:7] if tx.date and len(tx.date) >= 7 else None)
+                # Use tx.owner (per-transaction) or body.owner (global default)
+                tx_owner = tx.owner if tx.owner else body.owner
 
                 try:
-                    c.execute(
-                        """
-                        INSERT OR REPLACE INTO transactions_gold
-                        (id, tenant_id, date, month_ref, amount, merchant_clean,
-                         category, subcategory, owner, type, created_at,
-                         card_last4, card_type, is_refund, transaction_source,
-                         upload_id, needs_review)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            tx_id,
-                            workspace_id,
-                            tx.date,
-                            month_ref,
-                            tx.amount,
-                            merchant_clean,
-                            final_category,
-                            None,  # subcategory
-                            tx.owner,
-                            card_type,  # type = card_type
-                            now,
-                            tx.card_last4,
-                            card_type,
-                            1 if tx.is_refund else 0,
-                            "pdf_extraction",
-                            upload_id,
-                            1 if needs_review else 0,
-                        ),
-                    )
-                    saved_count += 1
+                    if body.statement_type == "current_account":
+                        # Persist to current_account_movements
+                        movement_id = f"pdf-{tx_id}"
+                        amount_signed = tx.amount if tx.is_refund else -tx.amount
+                        c.execute(
+                            """
+                            INSERT OR REPLACE INTO current_account_movements
+                            (tenant_id, owner, movement_id, date, month_ref, amount_signed,
+                             description, source_file, is_card_invoice_payment, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                workspace_id, tx_owner, movement_id, tx.date, month_ref,
+                                amount_signed, merchant_clean,
+                                f"pdf_{body.file_hash[:8]}", 0, now,
+                            ),
+                        )
+                        saved_count += 1
+                    else:
+                        # Persist to transactions_gold
+                        # Use body.month_ref (user input) or derive from date
+                        tx_month_ref = body.month_ref or (tx.date[:7] if tx.date and len(tx.date) >= 7 else None)
+                        # Use tx.owner (per-transaction) or body.owner (global default)
+                        tx_owner = tx.owner if tx.owner else body.owner
+
+                        c.execute(
+                            """
+                            INSERT OR REPLACE INTO transactions_gold
+                            (id, tenant_id, date, month_ref, amount, merchant_clean,
+                             category, subcategory, owner, type, created_at,
+                             card_last4, card_type, is_refund, transaction_source,
+                             upload_id, needs_review)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                tx_id,
+                                workspace_id,
+                                tx.date,
+                                tx_month_ref,
+                                tx.amount,
+                                merchant_clean,
+                                final_category,
+                                None,  # subcategory
+                                tx_owner,
+                                None,  # type — can be enriched later from card
+                                now,
+                                tx.card_last4,
+                                None,  # card_type — can be enriched later from card
+                                1 if tx.is_refund else 0,
+                                "pdf_extraction",
+                                upload_id,
+                                1 if needs_review else 0,
+                            ),
+                        )
+                        saved_count += 1
                 except Exception as e:
                     logger.error("Error inserting transaction: %s", e)
                     warnings.append(f"Failed to save transaction: {tx.description}")
@@ -2243,8 +2299,8 @@ async def upload_confirm(
                     f"upload_{body.file_hash[:8]}",
                     body.file_hash,
                     None,  # file_size_bytes — not available at confirm time
-                    "credit_card",  # default; could be refined
-                    None,  # bank — not available at confirm time
+                    body.statement_type,  # real value from request
+                    body.bank,            # real value from request
                     period_start,
                     period_end,
                     saved_count,
@@ -2261,51 +2317,68 @@ async def upload_confirm(
             if db_firestore is not None:
                 batch = db_firestore.batch()
                 op_count = 0
+                all_tx_payloads: List[dict] = []
+
+                # Build card map for type lookup (Individual/Shared)
+                card_map: dict[str, dict] = {}
+                try:
+                    cards_ref = db_firestore.collection("cards")
+                    cards_query = cards_ref.where("workspace_id", "==", workspace_id)
+                    for card_doc in cards_query.stream():
+                        card_data = card_doc.to_dict()
+                        if card_data and card_data.get("last4"):
+                            card_map[card_data["last4"]] = {
+                                "owner": card_data.get("owner", ""),
+                                "card_type": card_data.get("card_type", "Individual"),
+                            }
+                except Exception:
+                    pass  # Cards collection may not exist
 
                 for tx in body.transactions:
                     tx_id = f"tx-{uuid.uuid4().hex[:16]}"
 
-                    card_type = None
-                    needs_review = False
-                    if tx.card_last4 and tx.card_last4 in card_map:
-                        card_type = card_map[tx.card_last4]
-                    elif tx.card_last4:
-                        needs_review = True
-
                     merchant_clean = _norm_merchant(tx.description)
                     classification = cls_svc.classify(merchant_clean, workspace_id)
                     final_category = tx.category if tx.category else classification.category
-                    if classification.needs_review and not tx.category:
-                        needs_review = True
 
-                    try:
-                        date_parts = tx.date.split("-")
-                        month_ref = f"{date_parts[0]}-{date_parts[1]}"
-                    except Exception:
-                        month_ref = datetime.datetime.now().strftime("%Y-%m")
+                    # Use body.month_ref (user input) or derive from date
+                    tx_month_ref = body.month_ref or (tx.date[:7] if tx.date and len(tx.date) >= 7 else None)
+                    # Use body.owner (user input from UI) as the owner
+                    tx_owner = body.owner or tx.owner or None
 
+                    # Determine type from card lookup
+                    tx_type = None
+                    if tx.card_last4 and tx.card_last4 in card_map:
+                        card_info = card_map[tx.card_last4]
+                        # Capitalize to match existing format: "Individual" / "Shared"
+                        raw_type = card_info.get("card_type", "individual")
+                        tx_type = raw_type.capitalize() if raw_type else None
+                        # If no owner specified, use card owner
+                        if not tx_owner:
+                            tx_owner = card_info.get("owner")
+                    else:
+                        # Default: if no card_last4, assume "Individual" for the selected owner
+                        tx_type = "Individual"
+
+                    # Save in the SAME format as existing transactions
+                    # (no extra fields like card_last4, is_refund, transaction_source, etc.)
                     payload = {
                         "id": tx_id,
                         "tenant_id": workspace_id,
                         "date": tx.date,
-                        "month_ref": month_ref,
+                        "month_ref": tx_month_ref,
                         "amount": tx.amount,
                         "merchant_clean": merchant_clean,
                         "category": final_category,
                         "subcategory": None,
-                        "owner": tx.owner,
-                        "type": card_type,
+                        "owner": tx_owner,
+                        "type": tx_type,
                         "created_at": now,
-                        "card_last4": tx.card_last4,
-                        "card_type": card_type,
-                        "is_refund": tx.is_refund,
-                        "transaction_source": "pdf_extraction",
-                        "upload_id": upload_id,
-                        "needs_review": needs_review,
                     }
 
                     ref = db_firestore.collection(FIRESTORE_COLLECTION).document(tx_id)
                     batch.set(ref, payload, merge=True)
+                    all_tx_payloads.append(payload)
                     op_count += 1
                     saved_count += 1
 
@@ -2315,6 +2388,33 @@ async def upload_confirm(
 
                 if op_count % 400 != 0:
                     batch.commit()
+
+                if bq_client is not None and all_tx_payloads:
+                    bq_rows = []
+                    for tx_payload in all_tx_payloads:
+                        bq_rows.append({
+                            "id": tx_payload["id"],
+                            "tenant_id": tx_payload["tenant_id"],
+                            "date": tx_payload["date"],
+                            "month_ref": tx_payload["month_ref"],
+                            "amount": tx_payload["amount"],
+                            "merchant_clean": tx_payload["merchant_clean"],
+                            "category": tx_payload["category"],
+                            "subcategory": tx_payload.get("subcategory"),
+                            "owner": tx_payload.get("owner"),
+                            "type": tx_payload.get("type"),
+                            "created_at": tx_payload["created_at"],
+                        })
+                    try:
+                        from google.cloud.bigquery import LoadJobConfig, SourceFormat
+                        job_config = LoadJobConfig(
+                            source_format=SourceFormat.NEWLINE_DELIMITED_JSON,
+                            write_disposition="WRITE_APPEND",
+                        )
+                        load_job = bq_client.load_table_from_json(bq_rows, TABLE_GOLD, job_config=job_config)
+                        load_job.result()
+                    except Exception as bq_err:
+                        logger.error("BigQuery insert failed in upload_confirm: %s", bq_err)
 
         # Invalidate dashboard cache
         dashboard_cache.invalidate_prefix(f"dashboard:{workspace_id}:")
@@ -3061,27 +3161,58 @@ def get_transactions(
         conn = get_db_connection()
         c = conn.cursor()
         
-        # Count query
-        count_query = "SELECT COUNT(*) FROM transactions_gold WHERE tenant_id = ? AND month_ref >= ? AND month_ref <= ?"
-        params = [tenant.tenant_id, start, end_month]
+        # Build card map for enrichment
+        card_map = {}
+        try:
+            c.execute(
+                "SELECT last4, owner, card_type FROM cards WHERE workspace_id = ? AND is_active = 1",
+                (tenant.tenant_id,),
+            )
+            card_map = {
+                row["last4"]: CardInfo(owner=row["owner"], card_type=row["card_type"])
+                for row in c.fetchall()
+            }
+        except Exception:
+            # Cards table may not exist yet; proceed without card enrichment
+            pass
         
-        if owner:
-            count_query += " AND owner = ?"
-            params.append(owner)
-        if tx_type:
-            count_query += " AND type = ?"
-            params.append(tx_type)
+        # Convert YYYY-MM to date range for querying transactions with NULL month_ref
+        start_date = f"{start}-01"
+        end_year, end_mon = int(end_month[:4]), int(end_month[5:7])
+        last_day = calendar.monthrange(end_year, end_mon)[1]
+        end_date = f"{end_month}-{last_day:02d}"
         
-        c.execute(count_query, params)
-        total = c.fetchone()[0]
+        # Query: get all transactions in the date range OR with matching month_ref
+        # This handles both old data (with stored month_ref) and new data (NULL month_ref)
+        base_query = """
+            SELECT * FROM transactions_gold 
+            WHERE tenant_id = ? 
+            AND (
+                (month_ref >= ? AND month_ref <= ?)
+                OR (month_ref IS NULL AND date >= ? AND date <= ?)
+            )
+        """
+        params = [tenant.tenant_id, start, end_month, start_date, end_date]
         
-        # Data query with pagination
-        data_query = count_query.replace("SELECT COUNT(*)", "SELECT *") + " ORDER BY date DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-        c.execute(data_query, params)
-        results = [dict(row) for row in c.fetchall()]
+        c.execute(base_query + " ORDER BY date DESC", params)
+        raw_results = [dict(row) for row in c.fetchall()]
         conn.close()
-        return {"data": results, "total": total, "limit": limit, "offset": offset}
+        
+        # Enrich with card data and month_ref
+        enrichment_svc = EnrichmentService()
+        enriched = enrichment_svc.enrich_transactions(raw_results, card_map)
+        
+        # Apply owner/type filters AFTER enrichment (since these fields are now computed at query time)
+        if owner:
+            enriched = [tx for tx in enriched if tx.get("owner") == owner]
+        if tx_type:
+            enriched = [tx for tx in enriched if tx.get("type") == tx_type]
+        
+        # Pagination
+        total = len(enriched)
+        page = enriched[offset:offset + limit]
+        
+        return {"data": page, "total": total, "limit": limit, "offset": offset}
 
     # MOCK MODE
     if USE_MOCK or db_firestore is None:
@@ -3145,51 +3276,58 @@ def get_transactions(
 
     # FIRESTORE MODE (Cloud)
     try:
-        query = db_firestore.collection(FIRESTORE_COLLECTION)
-        query = query.where("tenant_id", "==", tenant.tenant_id)
-        query = query.where("month_ref", ">=", start).where("month_ref", "<=", end_month)
+        # Simplified query: fetch by tenant_id only, filter month_ref in Python
+        # This avoids the composite index requirement (tenant_id + month_ref range)
+        query_ref = db_firestore.collection(FIRESTORE_COLLECTION)
+        query_ref = query_ref.where("tenant_id", "==", tenant.tenant_id)
 
-        docs = query.stream()
+        # Merge results
+        seen_ids = set()
         results = []
-        for doc in docs:
+
+        for doc in query_ref.stream():
             data = doc.to_dict() or {}
             data["id"] = doc.id
             data["tenant_id"] = tenant.tenant_id
 
-            if owner and data.get("owner") != owner:
-                continue
-            if tx_type and data.get("type") != tx_type:
-                continue
+            # Filter by month_ref range OR date range (for NULL month_ref)
+            doc_month_ref = data.get("month_ref")
+            doc_date = data.get("date", "")
 
-            results.append(data)
+            if doc_month_ref:
+                # Has month_ref: check if in range
+                if not (start <= doc_month_ref <= end_month):
+                    continue
+            else:
+                # NULL month_ref: check date range
+                start_date = f"{start}-01"
+                end_year, end_mon = int(end_month[:4]), int(end_month[5:7])
+                last_day = calendar.monthrange(end_year, end_mon)[1]
+                end_date = f"{end_month}-{last_day:02d}"
+                if not (start_date <= doc_date <= end_date):
+                    continue
+
+            if data["id"] not in seen_ids:
+                seen_ids.add(data["id"])
+                results.append(data)
+
+        # Apply owner/type filters directly
+        if owner:
+            results = [tx for tx in results if tx.get("owner") == owner]
+        if tx_type:
+            results = [tx for tx in results if tx.get("type") == tx_type]
 
         if not results:
-            logger.info("No Firestore transactions found for tenant %s; falling back to BigQuery.", tenant.tenant_id)
-            return _query_transactions_bigquery()
+            logger.info("No Firestore transactions found for tenant %s in range %s to %s.", tenant.tenant_id, start, end_month)
+            return {"data": [], "total": 0, "limit": limit, "offset": offset}
 
-        bq_result = _query_transactions_bigquery(fetch_all=True)
-        bq_rows = bq_result.get("data", [])
-        if not bq_rows:
-            results.sort(key=lambda x: x.get("date", ""), reverse=True)
-            total = len(results)
-            page = results[offset:offset + limit]
-            return {"data": page, "total": total, "limit": limit, "offset": offset}
-
-        merged_by_id = {row.get("id"): row for row in bq_rows if row.get("id")}
-        for row in results:
-            row_id = row.get("id")
-            if not row_id:
-                continue
-            merged_by_id[row_id] = {**merged_by_id.get(row_id, {}), **row}
-
-        merged_rows = list(merged_by_id.values())
-        merged_rows.sort(key=lambda x: x.get("date", ""), reverse=True)
-        total = len(merged_rows)
-        page = merged_rows[offset:offset + limit]
+        results.sort(key=lambda x: x.get("date", ""), reverse=True)
+        total = len(results)
+        page = results[offset:offset + limit]
         return {"data": page, "total": total, "limit": limit, "offset": offset}
     except Exception as e:
-        logger.warning("Firestore transaction query failed; falling back to BigQuery: %s", e)
-        return _query_transactions_bigquery()
+        logger.error("Firestore transaction query failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar transações: {str(e)}")
 
 @app.put("/transactions/{transaction_id}")
 def update_transaction(
@@ -3213,9 +3351,16 @@ def update_transaction(
         if update_data.date is not None:
             set_clauses.append("date = ?")
             params.append(update_data.date)
-            # Also update month_ref
-            set_clauses.append("month_ref = ?")
-            params.append(update_data.date[:7] if update_data.date else None)
+            # Only update month_ref if the existing value is NULL (preserve user-set month assignments)
+            c.execute(
+                "SELECT month_ref FROM transactions_gold WHERE id = ? AND tenant_id = ?",
+                (transaction_id, tenant.tenant_id),
+            )
+            row = c.fetchone()
+            existing_month_ref = row[0] if row else None
+            if existing_month_ref is None:
+                set_clauses.append("month_ref = ?")
+                params.append(update_data.date[:7] if update_data.date else None)
         if update_data.amount is not None:
             set_clauses.append("amount = ?")
             params.append(update_data.amount)
@@ -3260,7 +3405,7 @@ def update_transaction(
         update_dict = {}
         if update_data.date is not None:
             update_dict['date'] = update_data.date
-            update_dict['month_ref'] = update_data.date[:7]
+            # month_ref will be conditionally set after fetching current doc
         if update_data.amount is not None:
             update_dict['amount'] = update_data.amount
         if update_data.merchant_clean is not None:
@@ -3286,6 +3431,12 @@ def update_transaction(
         current_data = doc.to_dict() or {}
         if (current_data.get("tenant_id") or DEFAULT_TENANT_ID) != tenant.tenant_id:
             raise HTTPException(status_code=404, detail="Transaction not found")
+
+        # Only update month_ref if the existing value is NULL (preserve user-set month assignments)
+        if update_data.date is not None:
+            existing_month_ref = current_data.get("month_ref")
+            if existing_month_ref is None:
+                update_dict['month_ref'] = update_data.date[:7]
 
         doc_ref.update({**update_dict, "updated_at": datetime.datetime.now().isoformat()})
 
@@ -3357,7 +3508,6 @@ def create_transaction(tx: TransactionCreate, tenant: TenantContext = Depends(ge
         }
         db_firestore.collection(FIRESTORE_COLLECTION).document(tx_id).set(doc_data)
         dashboard_cache.invalidate_prefix(f"dashboard:{tenant.tenant_id}:")
-        _sync_to_bq_if_cloud(tenant.tenant_id)
         return {"status": "created", "id": tx_id}
     except Exception as e:
         logger.error("Error: %s", e)
@@ -3402,7 +3552,6 @@ def delete_transaction(transaction_id: str, tenant: TenantContext = Depends(get_
             raise HTTPException(status_code=404, detail="Transaction not found")
         doc_ref.delete()
         dashboard_cache.invalidate_prefix(f"dashboard:{tenant.tenant_id}:")
-        _sync_to_bq_if_cloud(tenant.tenant_id)
         return {"status": "deleted", "id": transaction_id}
     except HTTPException:
         raise
@@ -3501,67 +3650,76 @@ def get_dashboard_summary(
         c = conn.cursor()
 
         workspace_owners = _get_workspace_owner_names(tenant.tenant_id)
-        
-        # Helper to query totals
-        def get_total_spend_sqlite(s_date, e_date):
-            w = "tenant_id = ? AND month_ref >= ? AND month_ref <= ?"
-            p = [tenant.tenant_id, s_date, e_date]
+
+        # Build card map for enrichment (same pattern as GET /transactions)
+        card_map = {}
+        try:
+            c.execute(
+                "SELECT last4, owner, card_type FROM cards WHERE workspace_id = ? AND is_active = 1",
+                (tenant.tenant_id,),
+            )
+            card_map = {
+                row["last4"]: CardInfo(owner=row["owner"], card_type=row["card_type"])
+                for row in c.fetchall()
+            }
+        except Exception:
+            pass
+
+        enrichment_svc = EnrichmentService()
+
+        # Helper: fetch raw transactions for a period, enrich, then aggregate
+        def get_enriched_transactions(s_date, e_date):
+            """Fetch raw transactions for a period and apply enrichment."""
+            c.execute(
+                "SELECT * FROM transactions_gold WHERE tenant_id = ? AND month_ref >= ? AND month_ref <= ?",
+                [tenant.tenant_id, s_date, e_date],
+            )
+            raw = [dict(r) for r in c.fetchall()]
+            return enrichment_svc.enrich_transactions(raw, card_map)
+
+        def aggregate_totals(enriched_txs):
+            """Aggregate totals from enriched transactions, applying owner/type filters."""
+            filtered = enriched_txs
             if owner:
-                w += " AND owner = ?"
-                p.append(owner)
+                filtered = [tx for tx in filtered if tx.get("owner") == owner]
             if tx_type:
-                w += " AND type = ?"
-                p.append(tx_type)
-            
-            c.execute(f"""
-                SELECT 
-                    SUM(amount) as total_spend,
-                    owner,
-                    SUM(amount) as owner_spend
-                FROM transactions_gold
-                WHERE {w}
-                GROUP BY owner
-            """, p)
-            rows = c.fetchall()
+                filtered = [tx for tx in filtered if tx.get("type") == tx_type]
+
             result = {'total_spend': 0}
-            for r in rows:
-                o_name = r['owner']
-                o_spend = r['owner_spend'] or 0
-                result['total_spend'] += o_spend
-                result[f'{o_name}_spend'] = o_spend
+            for tx in filtered:
+                o_name = tx.get("owner") or ""
+                amt = tx.get("amount", 0) or 0
+                result['total_spend'] += amt
+                result[f'{o_name}_spend'] = result.get(f'{o_name}_spend', 0) + amt
             return result
 
         # 1. Current Period
-        current_totals = get_total_spend_sqlite(start, end_month)
-        
+        current_enriched = get_enriched_transactions(start, end_month)
+        current_totals = aggregate_totals(current_enriched)
+
         # 2. Last Year Period
         def get_past_date_str(date_str):
             y, m = map(int, date_str.split('-'))
             return f"{y-1}-{m:02d}"
-            
+
         start_ly = get_past_date_str(start)
         end_ly = get_past_date_str(end_month)
-        last_year_totals = get_total_spend_sqlite(start_ly, end_ly)
+        last_year_enriched = get_enriched_transactions(start_ly, end_ly)
+        last_year_totals = aggregate_totals(last_year_enriched)
 
-        # 3. Category Spend (Current Only)
-        base_where = "tenant_id = ? AND month_ref >= ? AND month_ref <= ?"
-        params = [tenant.tenant_id, start, end_month]
+        # 3. Category Spend (Current Only) - from enriched data
+        filtered_current = current_enriched
         if owner:
-            base_where += " AND owner = ?"
-            params.append(owner)
+            filtered_current = [tx for tx in filtered_current if tx.get("owner") == owner]
         if tx_type:
-            base_where += " AND type = ?"
-            params.append(tx_type)
+            filtered_current = [tx for tx in filtered_current if tx.get("type") == tx_type]
 
-        c.execute(f"""
-            SELECT category, SUM(amount) as value
-            FROM transactions_gold
-            WHERE {base_where}
-            GROUP BY category
-            ORDER BY value DESC
-        """, params)
-        result_cat = [dict(r) for r in c.fetchall()]
-        
+        category_totals = {}
+        for tx in filtered_current:
+            cat = tx.get("category") or "Outros"
+            category_totals[cat] = category_totals.get(cat, 0) + (tx.get("amount", 0) or 0)
+        result_cat = [{"category": k, "value": v} for k, v in sorted(category_totals.items(), key=lambda x: -x[1])]
+
         # 4. Settlement Logic (only for Shared transactions, Current Period)
         # When tx_type is set and is not "Shared", settlement is not applicable —
         # skip the query entirely and return zeroed settlement data.
@@ -3570,37 +3728,28 @@ def get_dashboard_summary(
             direction = "Sem pendências"
             amount = 0
         else:
-            settlement_where = "tenant_id = ? AND month_ref >= ? AND month_ref <= ?"
-            settlement_params = [tenant.tenant_id, start, end_month]
-            if owner:
-                settlement_where += " AND owner = ?"
-                settlement_params.append(owner)
-            
-            c.execute(f"""
-                SELECT 
-                    owner,
-                    SUM(amount) as shared_paid
-                FROM transactions_gold
-                WHERE {settlement_where} AND type = 'Shared'
-                GROUP BY owner
-            """, settlement_params)
-            settlement_rows = [dict(r) for r in c.fetchall()]
             conn.close()
-            
+            # Use enriched data for settlement - filter to Shared type after enrichment
+            settlement_txs = current_enriched
+            if owner:
+                settlement_txs = [tx for tx in settlement_txs if tx.get("owner") == owner]
+            shared_txs = [tx for tx in settlement_txs if tx.get("type") == "Shared"]
+
             # Calculate settlement (split shared expenses evenly among all owners)
             paid_by_owner = {}
-            for row in settlement_rows:
-                paid_by_owner[row['owner']] = row['shared_paid'] or 0
-                
+            for tx in shared_txs:
+                o_name = tx.get("owner") or ""
+                paid_by_owner[o_name] = paid_by_owner.get(o_name, 0) + (tx.get("amount", 0) or 0)
+
             total_shared = sum(paid_by_owner.values())
             num_owners = len(workspace_owners) if workspace_owners else 2
             fair_share = total_shared / num_owners if total_shared > 0 else 0
-            
+
             # Find who owes whom (simplified: largest overpayer vs largest underpayer)
             balances = {o: paid_by_owner.get(o, 0) - fair_share for o in workspace_owners}
             overpayers = {o: b for o, b in balances.items() if b > 0}
             underpayers = {o: b for o, b in balances.items() if b < 0}
-            
+
             if overpayers and underpayers:
                 top_overpayer = max(overpayers, key=overpayers.get)
                 top_underpayer = min(underpayers, key=underpayers.get)
@@ -4040,11 +4189,23 @@ def sync_firestore_to_bigquery(tenant: TenantContext = Depends(get_tenant_contex
             return {"status": "success", "message": "No transactions to sync", "synced_count": 0}
         
         # 2. Remove only this tenant data from BigQuery before reloading
-        delete_query = f"DELETE FROM `{TABLE_GOLD}` WHERE tenant_id = @tenant_id"
-        delete_config = bigquery.QueryJobConfig(
-            query_parameters=[bigquery.ScalarQueryParameter("tenant_id", "STRING", tenant.tenant_id)]
-        )
-        bq_client.query(delete_query, job_config=delete_config).result()
+        # Use a copy-based approach to avoid streaming buffer issues
+        try:
+            delete_query = f"DELETE FROM `{TABLE_GOLD}` WHERE tenant_id = @tenant_id"
+            delete_config = bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ScalarQueryParameter("tenant_id", "STRING", tenant.tenant_id)]
+            )
+            bq_client.query(delete_query, job_config=delete_config).result()
+        except Exception as del_err:
+            if "streaming buffer" in str(del_err):
+                # Streaming buffer prevents DELETE. Wait and retry is the only option.
+                # Return a user-friendly message instead of 500.
+                return {
+                    "status": "pending",
+                    "message": "Dados recém-importados ainda estão sendo processados pelo BigQuery. Tente sincronizar novamente em alguns minutos.",
+                    "synced_count": 0
+                }
+            raise
         
         # 3. Prepare rows for batch insert
         gold_rows = []
@@ -4087,6 +4248,81 @@ def sync_firestore_to_bigquery(tenant: TenantContext = Depends(get_tenant_contex
         
     except Exception as e:
         logger.error("Error: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/transactions/bulk/{month_ref}")
+def delete_transactions_by_month(
+    month_ref: str,
+    tenant: TenantContext = Depends(get_tenant_context),
+):
+    """
+    Delete all transactions for a specific month (YYYY-MM format).
+    Removes from both Firestore and BigQuery.
+    """
+    _require_data_access(tenant)
+    _require_tenant_id(tenant)
+
+    # Validate month_ref format
+    import re
+    if not re.match(r"^\d{4}-\d{2}$", month_ref):
+        raise HTTPException(status_code=400, detail="month_ref must be YYYY-MM format")
+
+    # SQLITE MODE
+    if USE_SQLITE:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            "DELETE FROM transactions_gold WHERE tenant_id = ? AND month_ref = ?",
+            (tenant.tenant_id, month_ref),
+        )
+        deleted = c.rowcount
+        conn.commit()
+        conn.close()
+        dashboard_cache.invalidate_prefix(f"dashboard:{tenant.tenant_id}:")
+        return {"status": "deleted", "month_ref": month_ref, "deleted_count": deleted}
+
+    # MOCK MODE
+    if USE_MOCK or db_firestore is None:
+        return {"status": "deleted (mock)", "month_ref": month_ref, "deleted_count": 0}
+
+    # FIRESTORE + BIGQUERY MODE
+    try:
+        # 1. Delete from Firestore
+        docs = db_firestore.collection(FIRESTORE_COLLECTION)\
+            .where("tenant_id", "==", tenant.tenant_id)\
+            .where("month_ref", "==", month_ref)\
+            .stream()
+
+        deleted_count = 0
+        batch = db_firestore.batch()
+        batch_size = 0
+        for doc in docs:
+            batch.delete(doc.reference)
+            batch_size += 1
+            deleted_count += 1
+            if batch_size >= 400:
+                batch.commit()
+                batch = db_firestore.batch()
+                batch_size = 0
+        if batch_size > 0:
+            batch.commit()
+
+        # 2. Delete from BigQuery
+        if bq_client:
+            delete_query = f"DELETE FROM `{TABLE_GOLD}` WHERE tenant_id = @tenant_id AND month_ref = @month_ref"
+            delete_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("tenant_id", "STRING", tenant.tenant_id),
+                    bigquery.ScalarQueryParameter("month_ref", "STRING", month_ref),
+                ]
+            )
+            bq_client.query(delete_query, job_config=delete_config).result()
+
+        dashboard_cache.invalidate_prefix(f"dashboard:{tenant.tenant_id}:")
+        return {"status": "deleted", "month_ref": month_ref, "deleted_count": deleted_count}
+    except Exception as e:
+        logger.error("Error deleting transactions for month %s: %s", month_ref, e)
         raise HTTPException(status_code=500, detail=str(e))
 
 

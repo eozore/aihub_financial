@@ -74,8 +74,32 @@ def _make_statement(**overrides) -> dict:
 
 
 def _make_gemini_json_response(**overrides) -> str:
-    """Return a JSON string that Gemini would return."""
-    return json.dumps(_make_statement(**overrides))
+    """Return a JSON string in the free-form Gemini Stage-1 format.
+
+    Mirrors the structure Gemini returns when given GEMINI_RAW_PROMPT.
+    The _parse_raw_to_extracted() method converts this to ExtractedStatement.
+    """
+    base = {
+        "document_info": {
+            "bank": overrides.get("bank", "Nubank"),
+            "customer_name": overrides.get("holder_name", "Victor Zore"),
+            "due_date": overrides.get("due_date", "04 MAI 2026"),
+            "billing_period": {"start": "01 ABR", "end": "30 ABR"},
+        },
+        "summary": {
+            "total_purchases": overrides.get("total_amount", 1500.00),
+            "total_to_pay": overrides.get("total_amount", 1500.00),
+        },
+        "transactions": overrides.get("transactions", [
+            {
+                "date": "15 ABR",
+                "description": "UBER *TRIP",
+                "card_last_digits": "4535",
+                "amount": 25.50,
+            }
+        ]),
+    }
+    return json.dumps(base)
 
 
 # ---------------------------------------------------------------------------
@@ -268,18 +292,18 @@ class TestExtractionServiceCache:
         mock_model = MagicMock()
         mock_response = MagicMock()
         mock_response.text = _make_gemini_json_response()
-        mock_model.generate_content.return_value = mock_response
+        mock_model.models.generate_content.return_value = mock_response
 
         service = ExtractionService(gemini_model=mock_model)
         pdf_bytes = b"fake-pdf-content-for-cache-test"
 
         # First call — should call Gemini
         result1 = service.extract(pdf_bytes)
-        assert mock_model.generate_content.call_count == 1
+        assert mock_model.models.generate_content.call_count == 1
 
         # Second call with same bytes — should use cache
         result2 = service.extract(pdf_bytes)
-        assert mock_model.generate_content.call_count == 1  # NOT called again
+        assert mock_model.models.generate_content.call_count == 1  # NOT called again
         assert result1 == result2
 
     def test_different_pdf_not_cached(self):
@@ -287,21 +311,21 @@ class TestExtractionServiceCache:
         mock_model = MagicMock()
         mock_response = MagicMock()
         mock_response.text = _make_gemini_json_response()
-        mock_model.generate_content.return_value = mock_response
+        mock_model.models.generate_content.return_value = mock_response
 
         service = ExtractionService(gemini_model=mock_model)
 
         service.extract(b"pdf-content-A")
         service.extract(b"pdf-content-B")
 
-        assert mock_model.generate_content.call_count == 2
+        assert mock_model.models.generate_content.call_count == 2
 
     def test_cache_stores_by_sha256_hash(self):
         """Verify the cache key is the SHA-256 hash of the PDF bytes."""
         mock_model = MagicMock()
         mock_response = MagicMock()
         mock_response.text = _make_gemini_json_response()
-        mock_model.generate_content.return_value = mock_response
+        mock_model.models.generate_content.return_value = mock_response
 
         service = ExtractionService(gemini_model=mock_model)
         pdf_bytes = b"test-pdf-bytes"
@@ -319,14 +343,14 @@ class TestExtractionServiceGemini:
         mock_model = MagicMock()
         mock_response = MagicMock()
         mock_response.text = _make_gemini_json_response()
-        mock_model.generate_content.return_value = mock_response
+        mock_model.models.generate_content.return_value = mock_response
 
         service = ExtractionService(gemini_model=mock_model)
         result = service.extract(b"some-pdf")
 
         assert isinstance(result, ExtractedStatement)
         assert result.bank == "Nubank"
-        assert mock_model.generate_content.call_count == 1
+        assert mock_model.models.generate_content.call_count == 1
 
     def test_gemini_strips_markdown_fences(self):
         """Gemini sometimes wraps JSON in ```json ... ``` fences."""
@@ -336,7 +360,7 @@ class TestExtractionServiceGemini:
         mock_model = MagicMock()
         mock_response = MagicMock()
         mock_response.text = fenced
-        mock_model.generate_content.return_value = mock_response
+        mock_model.models.generate_content.return_value = mock_response
 
         service = ExtractionService(gemini_model=mock_model)
         result = service.extract(b"pdf-with-fences")
@@ -350,7 +374,7 @@ class TestExtractionServiceGemini:
         # Return invalid JSON (missing required fields)
         bad_response = MagicMock()
         bad_response.text = '{"invalid": "data"}'
-        mock_model.generate_content.return_value = bad_response
+        mock_model.models.generate_content.return_value = bad_response
 
         service = ExtractionService(gemini_model=mock_model)
 
@@ -361,7 +385,7 @@ class TestExtractionServiceGemini:
             result = service.extract(b"some-pdf")
 
         # Gemini was called 3 times (retries)
-        assert mock_model.generate_content.call_count == 3
+        assert mock_model.models.generate_content.call_count == 3
         # Fallback was called once
         assert mock_fallback.call_count == 1
 
@@ -380,7 +404,7 @@ class TestExtractionServiceRetry:
         success_response = MagicMock()
         success_response.text = _make_gemini_json_response()
 
-        mock_model.generate_content.side_effect = [
+        mock_model.models.generate_content.side_effect = [
             Exception("API error"),
             Exception("API error"),
             success_response,
@@ -390,7 +414,7 @@ class TestExtractionServiceRetry:
         result = service.extract(b"retry-pdf")
 
         assert isinstance(result, ExtractedStatement)
-        assert mock_model.generate_content.call_count == 3
+        assert mock_model.models.generate_content.call_count == 3
         # Exponential backoff: sleep(1), sleep(2)
         assert mock_sleep.call_count == 2
         mock_sleep.assert_any_call(1)  # 2^0 = 1
@@ -400,7 +424,7 @@ class TestExtractionServiceRetry:
     def test_fallback_after_three_failures(self, mock_sleep):
         """All 3 Gemini attempts fail → falls back to pdfplumber."""
         mock_model = MagicMock()
-        mock_model.generate_content.side_effect = Exception("API down")
+        mock_model.models.generate_content.side_effect = Exception("API down")
 
         service = ExtractionService(gemini_model=mock_model)
 
@@ -408,7 +432,7 @@ class TestExtractionServiceRetry:
             mock_fallback.return_value = ExtractedStatement(**_make_statement())
             result = service.extract(b"failing-pdf")
 
-        assert mock_model.generate_content.call_count == 3
+        assert mock_model.models.generate_content.call_count == 3
         assert mock_fallback.call_count == 1
         assert isinstance(result, ExtractedStatement)
         # Backoff sleeps: 1s, 2s (not after the 3rd attempt)
@@ -418,7 +442,7 @@ class TestExtractionServiceRetry:
     def test_fallback_result_is_cached(self, mock_sleep):
         """Fallback result should also be cached."""
         mock_model = MagicMock()
-        mock_model.generate_content.side_effect = Exception("API down")
+        mock_model.models.generate_content.side_effect = Exception("API down")
 
         service = ExtractionService(gemini_model=mock_model)
         pdf_bytes = b"fallback-cache-test"
@@ -431,7 +455,7 @@ class TestExtractionServiceRetry:
         result2 = service.extract(pdf_bytes)
         assert result1 == result2
         # Gemini should NOT be called again
-        assert mock_model.generate_content.call_count == 3  # only from first call
+        assert mock_model.models.generate_content.call_count == 3  # only from first call
 
 
 # ---------------------------------------------------------------------------
@@ -531,8 +555,8 @@ class TestFallbackPdfplumber:
     def test_extract_holder_name_fallback(self):
         service = ExtractionService(gemini_model=MagicMock())
         text = "Random header\nNo name here"
-        # Should return default
-        assert service._extract_holder_name(text) == "Titular"
+        # Should return safe fallback "Nubank" (not "Titular") per task 5.3
+        assert service._extract_holder_name(text) == "Nubank"
 
     def test_extract_due_date(self):
         service = ExtractionService(gemini_model=MagicMock())
@@ -588,7 +612,9 @@ class TestGeminiPrompt:
         assert "parcela" in GEMINI_EXTRACTION_PROMPT
 
     def test_prompt_handles_multiple_holders(self):
-        assert "multiple card holders" in GEMINI_EXTRACTION_PROMPT
+        # The prompt describes handling of primary holder and additional cards
+        assert "primary holder" in GEMINI_EXTRACTION_PROMPT or "NOME - final XXXX" in GEMINI_EXTRACTION_PROMPT
 
     def test_prompt_handles_foreign_currency(self):
-        assert "foreign currency" in GEMINI_EXTRACTION_PROMPT
+        # The prompt includes original_currency in the schema
+        assert "original_currency" in GEMINI_EXTRACTION_PROMPT

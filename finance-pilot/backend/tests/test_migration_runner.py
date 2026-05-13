@@ -221,16 +221,17 @@ class TestRollbackLast:
         conn = _create_base_db()
         run_pending(conn)
         rolled = rollback_last(conn)
-        assert rolled == "002_create_saas_tables"
+        assert rolled == "003_save_raw_statements"
 
         applied = get_applied(conn)
-        assert "002_create_saas_tables" not in applied
-        assert "001_add_saas_columns" in applied
+        assert "003_save_raw_statements" not in applied
+        assert "002_create_saas_tables" in applied
 
     def test_rollback_removes_saas_tables(self):
         conn = _create_base_db()
         run_pending(conn)
-        rollback_last(conn)  # rolls back 002
+        rollback_last(conn)  # rolls back 003 (raw_statements)
+        rollback_last(conn)  # rolls back 002 (saas tables)
 
         tables = _get_tables(conn)
         for removed in ("cards", "workspace_category_rules", "subscriptions", "upload_history"):
@@ -241,6 +242,7 @@ class TestRollbackLast:
         _seed_transactions(conn, count=5)
         run_pending(conn)
 
+        rollback_last(conn)  # 003
         rollback_last(conn)  # 002
         rollback_last(conn)  # 001
 
@@ -268,11 +270,13 @@ class TestRollbackLast:
         run_pending(conn)
         rollback_last(conn)
         rollback_last(conn)
+        rollback_last(conn)
 
         # Re-apply everything
         applied = run_pending(conn)
         assert "001_add_saas_columns" in applied
         assert "002_create_saas_tables" in applied
+        assert "003_save_raw_statements" in applied
 
         # Data still intact
         count = conn.execute("SELECT COUNT(*) FROM transactions_gold").fetchone()[0]

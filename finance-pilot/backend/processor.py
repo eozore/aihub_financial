@@ -57,8 +57,14 @@ class TransactionProcessor:
         raw_str = f"{row['tenant_id']}-{row['date']}-{row['amount']}-{row['merchant_raw']}-{row['owner']}-{index}"
         return hashlib.sha256(raw_str.encode('utf-8')).hexdigest()[:16]
 
-    def _process_chunk(self, df, date_col, amt_col, merch_col, owner, month_ref, tenant_id, filename, offset):
-        """Process a DataFrame chunk and return a list of processed row dicts."""
+    def _process_chunk(self, df, date_col, amt_col, merch_col, owner, month_ref, tenant_id, filename, offset, allow_negative: bool = False):
+        """Process a DataFrame chunk and return a list of processed row dicts.
+
+        Args:
+            allow_negative: When True (current account), negative amounts are kept
+                            and converted to their absolute value. When False (credit card),
+                            negative amounts (refunds/chargebacks) are discarded.
+        """
         import calendar
 
         rows = []
@@ -80,9 +86,11 @@ class TransactionProcessor:
             except Exception:
                 amount = 0.0
 
-            # Ignore negative values (refunds/chargebacks)
-            if amount < 0:
+            # Ignore negative values (refunds/chargebacks) unless allow_negative is set
+            if amount < 0 and not allow_negative:
                 continue
+            # For current account (allow_negative=True), keep amount as positive
+            amount = abs(amount)
 
             # Date parsing
             original_date_str = str(row[date_col])

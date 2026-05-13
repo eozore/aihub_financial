@@ -9,12 +9,15 @@ Provides:
 Requirements: 4.1, 4.2, 4.3, 4.6
 """
 
+import os
 import uuid
 from dataclasses import dataclass
 from typing import List, Optional
 
-from database import get_db_connection
 from helpers import utc_now_iso
+
+USE_SQLITE = os.environ.get("USE_SQLITE", "false").lower() == "true"
+CATEGORY_RULES_COLLECTION = "workspace_category_rules"
 
 
 # ---------------------------------------------------------------------------
@@ -23,16 +26,32 @@ from helpers import utc_now_iso
 
 DEFAULT_CATEGORIES: dict[str, list[str]] = {
     "Alimentação": ["restaurante", "bar", "padaria", "lanchonete", "pizza", "sushi"],
-    "Delivery": ["ifood", "rappi", "uber eats", "ifd*"],
+    # "ifd*" replaced by "ifd" (plain substring — wildcard was never interpreted as glob)
+    "Delivery": ["ifood", "rappi", "uber eats", "ifd"],
     "Mercado": ["mercado", "supermercado", "hortifruti", "carrefour"],
-    "Transporte": ["uber", "99", "combustivel", "posto", "estacionamento", "pedagio"],
+    # Pedágio keywords added to Transporte (no separate "Pedágio" category exists)
+    "Transporte": [
+        "uber", "99", "combustivel", "posto", "estacionamento", "pedagio",
+        "nutag", "sem parar", "conectcar", "veloe",
+    ],
     "Moradia": ["aluguel", "condominio", "luz", "energia", "agua", "internet"],
     "Saúde": ["farmacia", "drogaria", "medico", "academia", "totalpass"],
     "Educação": ["curso", "escola", "udemy", "alura", "linkedin"],
     "Lazer": ["cinema", "show", "ingresso", "parque"],
-    "Streaming": ["netflix", "spotify", "disney", "hbo", "amazon prime", "youtube premium"],
+    # Streaming keywords unified from classification_service.py legacy module
+    "Streaming": [
+        "netflix", "spotify", "disney", "hbo", "amazon prime", "youtube premium",
+        "apple.com/bill", "amazonprimebr", "prime canais", "apple tv",
+        "apple services", "youtube", "twitch",
+    ],
     "Compras": ["shopee", "mercado livre", "amazon", "magazine"],
-    "Assinaturas": ["google one", "icloud", "canva", "chatgpt", "github"],
+    # Assinaturas keywords unified from classification_service.py legacy module
+    "Assinaturas": [
+        "google one", "icloud", "canva", "chatgpt", "github",
+        "openai", "notion", "figma", "digital ocean",
+        "google cloud", "google colab", "hostinger", "heygen", "invideo",
+        "x (twitter)", "twitter", "linkedin", "totalpass",
+    ],
     "Viagem": ["airbnb", "hotel", "pousada", "booking", "azul", "latam"],
     "Pets": ["petlove", "petshop", "veterinario"],
     "Impostos/Taxas": ["iof", "anuidade", "taxa"],
@@ -87,28 +106,45 @@ class ClassificationService:
 
     @staticmethod
     def _get_workspace_rule(workspace_id: str, merchant_clean: str) -> Optional[dict]:
-        """Query ``workspace_category_rules`` for an exact match.
+        """Query workspace_category_rules for an exact match.
 
+        Works in both SQLite (dev) and Firestore (production) modes.
         Returns a dict with at least a ``category`` key, or ``None``.
         """
-        conn = get_db_connection()
-        try:
-            c = conn.cursor()
-            c.execute(
-                """
-                SELECT category
-                FROM workspace_category_rules
-                WHERE workspace_id = ?
-                  AND merchant_pattern = ? COLLATE NOCASE
-                """,
-                (workspace_id, merchant_clean),
-            )
-            row = c.fetchone()
-            if row is None:
+        if USE_SQLITE:
+            try:
+                from database import get_db_connection
+                conn = get_db_connection()
+                try:
+                    c = conn.cursor()
+                    c.execute(
+                        "SELECT category FROM workspace_category_rules WHERE workspace_id = ? AND merchant_pattern = ? COLLATE NOCASE",
+                        (workspace_id, merchant_clean),
+                    )
+                    row = c.fetchone()
+                    return dict(row) if row else None
+                finally:
+                    conn.close()
+            except Exception:
                 return None
-            return dict(row)
-        finally:
-            conn.close()
+        else:
+            # Firestore mode — skip workspace rules (table not in Firestore yet)
+            # Rules are stored in Firestore collection when created via API
+            try:
+                from google.cloud import firestore
+                db = firestore.Client(project=os.environ.get("PROJECT_ID", "aifin-project"))
+                docs = list(
+                    db.collection(CATEGORY_RULES_COLLECTION)
+                    .where("workspace_id", "==", workspace_id)
+                    .where("merchant_pattern", "==", merchant_clean.lower())
+                    .limit(1)
+                    .stream()
+                )
+                if docs:
+                    return docs[0].to_dict()
+                return None
+            except Exception:
+                return None
 
     @staticmethod
     def _match_default_keywords(merchant_clean: str) -> Optional[str]:
@@ -127,147 +163,140 @@ class ClassificationService:
 
 
 # ---------------------------------------------------------------------------
-# CRUD for workspace_category_rules
+# Firestore helper
 # ---------------------------------------------------------------------------
 
-def create_rule(
-    workspace_id: str,
-    merchant_pattern: str,
-    category: str,
-    created_by: Optional[str] = None,
-) -> dict:
-    """Create a new workspace category rule.
-
-    Returns the created rule as a dict.
-
-    Raises ``ValueError`` if a rule with the same ``merchant_pattern``
-    already exists in the workspace.
-    """
-    conn = get_db_connection()
+def _get_firestore():
     try:
-        c = conn.cursor()
+        from google.cloud import firestore
+        return firestore.Client(project=os.environ.get("PROJECT_ID", "aifin-project"))
+    except Exception:
+        return None
 
-        # Check uniqueness
-        c.execute(
-            "SELECT id FROM workspace_category_rules WHERE workspace_id = ? AND merchant_pattern = ?",
-            (workspace_id, merchant_pattern),
-        )
-        if c.fetchone() is not None:
-            raise ValueError(
-                f"Rule for merchant_pattern '{merchant_pattern}' already exists in this workspace"
-            )
 
-        now = utc_now_iso()
-        rule_id = f"rule-{uuid.uuid4().hex[:16]}"
+# ---------------------------------------------------------------------------
+# CRUD for workspace_category_rules — dual SQLite / Firestore
+# ---------------------------------------------------------------------------
 
-        c.execute(
-            """
-            INSERT INTO workspace_category_rules
-                (id, workspace_id, merchant_pattern, category, created_by, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (rule_id, workspace_id, merchant_pattern, category, created_by, now),
-        )
-        conn.commit()
+def create_rule(workspace_id: str, merchant_pattern: str, category: str, created_by: Optional[str] = None) -> dict:
+    now = utc_now_iso()
+    rule_id = f"rule-{uuid.uuid4().hex[:16]}"
 
-        c.execute("SELECT * FROM workspace_category_rules WHERE id = ?", (rule_id,))
-        return dict(c.fetchone())
-    finally:
-        conn.close()
+    if USE_SQLITE:
+        from database import get_db_connection
+        conn = get_db_connection()
+        try:
+            c = conn.cursor()
+            c.execute("SELECT id FROM workspace_category_rules WHERE workspace_id = ? AND merchant_pattern = ?", (workspace_id, merchant_pattern))
+            if c.fetchone():
+                raise ValueError(f"Rule for merchant_pattern '{merchant_pattern}' already exists in this workspace")
+            c.execute("INSERT INTO workspace_category_rules (id, workspace_id, merchant_pattern, category, created_by, created_at) VALUES (?,?,?,?,?,?)",
+                      (rule_id, workspace_id, merchant_pattern, category, created_by, now))
+            conn.commit()
+            c.execute("SELECT * FROM workspace_category_rules WHERE id = ?", (rule_id,))
+            return dict(c.fetchone())
+        finally:
+            conn.close()
+    else:
+        db = _get_firestore()
+        if db is None:
+            raise ValueError("Database not available")
+        existing = list(db.collection(CATEGORY_RULES_COLLECTION).where("workspace_id", "==", workspace_id).where("merchant_pattern", "==", merchant_pattern).limit(1).stream())
+        if existing:
+            raise ValueError(f"Rule for merchant_pattern '{merchant_pattern}' already exists in this workspace")
+        payload = {"id": rule_id, "workspace_id": workspace_id, "merchant_pattern": merchant_pattern, "category": category, "created_by": created_by, "created_at": now}
+        db.collection(CATEGORY_RULES_COLLECTION).document(rule_id).set(payload)
+        return payload
 
 
 def list_rules(workspace_id: str) -> List[dict]:
-    """Return all category rules for *workspace_id*."""
-    conn = get_db_connection()
-    try:
-        c = conn.cursor()
-        c.execute(
-            "SELECT * FROM workspace_category_rules WHERE workspace_id = ? ORDER BY created_at ASC",
-            (workspace_id,),
-        )
-        return [dict(row) for row in c.fetchall()]
-    finally:
-        conn.close()
+    if USE_SQLITE:
+        from database import get_db_connection
+        conn = get_db_connection()
+        try:
+            c = conn.cursor()
+            c.execute("SELECT * FROM workspace_category_rules WHERE workspace_id = ? ORDER BY created_at ASC", (workspace_id,))
+            return [dict(row) for row in c.fetchall()]
+        finally:
+            conn.close()
+    else:
+        db = _get_firestore()
+        if db is None:
+            return []
+        docs = db.collection(CATEGORY_RULES_COLLECTION).where("workspace_id", "==", workspace_id).stream()
+        rules = [{**doc.to_dict(), "id": doc.id} for doc in docs]
+        rules.sort(key=lambda r: r.get("created_at", ""))
+        return rules
 
 
-def update_rule(
-    workspace_id: str,
-    rule_id: str,
-    merchant_pattern: Optional[str] = None,
-    category: Optional[str] = None,
-) -> dict:
-    """Update an existing workspace category rule.
-
-    Returns the updated rule as a dict.
-
-    Raises ``ValueError`` if the rule is not found or belongs to another
-    workspace.
-    """
-    conn = get_db_connection()
-    try:
-        c = conn.cursor()
-        c.execute("SELECT * FROM workspace_category_rules WHERE id = ?", (rule_id,))
-        row = c.fetchone()
-
-        if row is None:
+def update_rule(workspace_id: str, rule_id: str, merchant_pattern: Optional[str] = None, category: Optional[str] = None) -> dict:
+    if USE_SQLITE:
+        from database import get_db_connection
+        conn = get_db_connection()
+        try:
+            c = conn.cursor()
+            c.execute("SELECT * FROM workspace_category_rules WHERE id = ?", (rule_id,))
+            row = c.fetchone()
+            if not row:
+                raise ValueError("Rule not found")
+            existing = dict(row)
+            if existing["workspace_id"] != workspace_id:
+                raise ValueError("Rule not found")
+            new_pattern = merchant_pattern if merchant_pattern is not None else existing["merchant_pattern"]
+            new_category = category if category is not None else existing["category"]
+            if new_pattern != existing["merchant_pattern"]:
+                c.execute("SELECT id FROM workspace_category_rules WHERE workspace_id = ? AND merchant_pattern = ? AND id != ?", (workspace_id, new_pattern, rule_id))
+                if c.fetchone():
+                    raise ValueError(f"Rule for merchant_pattern '{new_pattern}' already exists in this workspace")
+            c.execute("UPDATE workspace_category_rules SET merchant_pattern = ?, category = ? WHERE id = ? AND workspace_id = ?", (new_pattern, new_category, rule_id, workspace_id))
+            conn.commit()
+            c.execute("SELECT * FROM workspace_category_rules WHERE id = ?", (rule_id,))
+            return dict(c.fetchone())
+        finally:
+            conn.close()
+    else:
+        db = _get_firestore()
+        if db is None:
+            raise ValueError("Database not available")
+        doc = db.collection(CATEGORY_RULES_COLLECTION).document(rule_id).get()
+        if not doc.exists:
             raise ValueError("Rule not found")
-
-        existing = dict(row)
+        existing = {**doc.to_dict(), "id": doc.id}
         if existing["workspace_id"] != workspace_id:
             raise ValueError("Rule not found")
-
-        new_pattern = merchant_pattern if merchant_pattern is not None else existing["merchant_pattern"]
-        new_category = category if category is not None else existing["category"]
-
-        # If merchant_pattern changed, check uniqueness
-        if new_pattern != existing["merchant_pattern"]:
-            c.execute(
-                "SELECT id FROM workspace_category_rules WHERE workspace_id = ? AND merchant_pattern = ? AND id != ?",
-                (workspace_id, new_pattern, rule_id),
-            )
-            if c.fetchone() is not None:
-                raise ValueError(
-                    f"Rule for merchant_pattern '{new_pattern}' already exists in this workspace"
-                )
-
-        c.execute(
-            """
-            UPDATE workspace_category_rules
-            SET merchant_pattern = ?, category = ?
-            WHERE id = ? AND workspace_id = ?
-            """,
-            (new_pattern, new_category, rule_id, workspace_id),
-        )
-        conn.commit()
-
-        c.execute("SELECT * FROM workspace_category_rules WHERE id = ?", (rule_id,))
-        return dict(c.fetchone())
-    finally:
-        conn.close()
+        updates = {}
+        if merchant_pattern is not None:
+            updates["merchant_pattern"] = merchant_pattern
+        if category is not None:
+            updates["category"] = category
+        if updates:
+            db.collection(CATEGORY_RULES_COLLECTION).document(rule_id).update(updates)
+        return {**existing, **updates}
 
 
 def delete_rule(workspace_id: str, rule_id: str) -> None:
-    """Delete a workspace category rule.
-
-    Raises ``ValueError`` if the rule is not found or belongs to another
-    workspace.
-    """
-    conn = get_db_connection()
-    try:
-        c = conn.cursor()
-        c.execute("SELECT * FROM workspace_category_rules WHERE id = ?", (rule_id,))
-        row = c.fetchone()
-
-        if row is None:
+    if USE_SQLITE:
+        from database import get_db_connection
+        conn = get_db_connection()
+        try:
+            c = conn.cursor()
+            c.execute("SELECT * FROM workspace_category_rules WHERE id = ?", (rule_id,))
+            row = c.fetchone()
+            if not row:
+                raise ValueError("Rule not found")
+            if dict(row)["workspace_id"] != workspace_id:
+                raise ValueError("Rule not found")
+            c.execute("DELETE FROM workspace_category_rules WHERE id = ? AND workspace_id = ?", (rule_id, workspace_id))
+            conn.commit()
+        finally:
+            conn.close()
+    else:
+        db = _get_firestore()
+        if db is None:
+            raise ValueError("Database not available")
+        doc = db.collection(CATEGORY_RULES_COLLECTION).document(rule_id).get()
+        if not doc.exists:
             raise ValueError("Rule not found")
-
-        if dict(row)["workspace_id"] != workspace_id:
+        if doc.to_dict().get("workspace_id") != workspace_id:
             raise ValueError("Rule not found")
-
-        c.execute(
-            "DELETE FROM workspace_category_rules WHERE id = ? AND workspace_id = ?",
-            (rule_id, workspace_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+        db.collection(CATEGORY_RULES_COLLECTION).document(rule_id).delete()

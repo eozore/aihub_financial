@@ -30,3 +30,17 @@ data/*.pdf
 
 # Database files
 *.db
+
+# Test caches
+.hypothesis/
+.pytest_cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+
+# CSV data files with personal info
+data/*.csv
